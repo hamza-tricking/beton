@@ -8,7 +8,7 @@ exports.createUser = catchAsync(async (req, res) => {
   const existing = await User.findOne({ email }).lean();
   if (existing) throw new AppError('Email already in use', 400);
   const hashedPassword = await bcrypt.hash(password, 12);
-  const user = await User.create({ name, email, password: hashedPassword, role, customRole });
+  const user = await User.create({ name, email, password: hashedPassword, role, customRole: customRole || null });
   res.status(201).json({ success: true, data: { user: { id: user._id, name: user.name, email: user.email, role: user.role } }, error: null, source: 'USER_CREATE' });
 });
 
@@ -34,6 +34,7 @@ exports.updateUser = catchAsync(async (req, res) => {
   if (updates.password) {
     updates.password = await bcrypt.hash(updates.password, 12);
   }
+  if (updates.customRole === '') updates.customRole = null;
   const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true }).lean();
   if (!user) throw new AppError('User not found', 404);
   res.json({ success: true, data: { user }, error: null, source: 'USER_UPDATE' });
