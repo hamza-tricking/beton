@@ -1,5 +1,5 @@
-const config = require('./config/env');
-const AppError = require('./utils/AppError');
+const config = require('../config/env');
+const AppError = require('../utils/AppError');
 
 const sendErrorDev = (err, res) => {
   res.status(err.statusCode || 500).json({
