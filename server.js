@@ -21,6 +21,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://dmtart.pro',
   'https://www.dmtart.pro',
+  'https://betonfront.vercel.app',
 ];
 
 app.use(cors({
