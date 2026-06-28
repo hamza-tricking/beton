@@ -1,9 +1,38 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Location = require('../models/Location');
+const User = require('../models/User');
 const catchAsync = require('../utils/catchAsync');
 
+const buildMatchFilter = (query) => {
+  const filter = {};
+  if (query.clientId) filter.client = query.clientId;
+  if (query.startDate || query.endDate) {
+    filter.createdAt = {};
+    if (query.startDate) filter.createdAt.$gte = new Date(query.startDate);
+    if (query.endDate) {
+      const end = new Date(query.endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = end;
+    }
+  }
+  return filter;
+};
+
+const buildMatchStage = (query) => {
+  const filter = buildMatchFilter(query);
+  if (query.productId) {
+    filter.$or = [
+      { product: query.productId },
+      { 'items.product': query.productId },
+    ];
+  }
+  return { $match: filter };
+};
+
 exports.getDashboard = catchAsync(async (req, res) => {
+  const matchStage = buildMatchStage(req.query);
+
   const [
     totalOrders,
     totalRevenue,
@@ -15,18 +44,14 @@ exports.getDashboard = catchAsync(async (req, res) => {
     topProducts,
     recentOrders,
   ] = await Promise.all([
-    Order.countDocuments(),
-    Order.aggregate([{ $group: { _id: null, total: { $sum: '$totalPrice' } } }]),
+    Order.countDocuments(matchStage.$match || {}),
+    Order.aggregate([matchStage, { $group: { _id: null, total: { $sum: '$totalPrice' } } }]),
     Order.aggregate([
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          revenue: { $sum: '$totalPrice' },
-        },
-      },
+      matchStage,
+      { $group: { _id: '$status', count: { $sum: 1 }, revenue: { $sum: '$totalPrice' } } },
     ]),
     Order.aggregate([
+      matchStage,
       {
         $project: {
           locations: {
@@ -47,13 +72,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
       },
       { $unwind: '$locations' },
       { $unwind: '$revenues' },
-      {
-        $group: {
-          _id: '$locations',
-          count: { $sum: 1 },
-          revenue: { $sum: '$revenues' },
-        },
-      },
+      { $group: { _id: '$locations', count: { $sum: 1 }, revenue: { $sum: '$revenues' } } },
       { $sort: { count: -1 } },
       { $limit: 5 },
       { $lookup: { from: 'locations', localField: '_id', foreignField: '_id', as: 'location' } },
@@ -63,7 +82,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
     Product.countDocuments(),
     Location.countDocuments(),
     Order.aggregate([
-      { $match: { createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+      matchStage,
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -74,6 +93,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
       { $sort: { _id: 1 } },
     ]),
     Order.aggregate([
+      matchStage,
       {
         $project: {
           productIds: {
@@ -93,7 +113,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
       { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
       { $project: { name: '$product.name', count: 1 } },
     ]),
-    Order.find()
+    Order.find(matchStage.$match || {})
       .populate('client', 'name')
       .populate('items.product', 'name')
       .sort('-createdAt')
@@ -108,7 +128,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
       totalRevenue: totalRevenue[0]?.total || 0,
       ordersByStatus,
       topLocations,
-      totalProducts,
+      totalProducts: req.query.productId ? totalOrders : totalProducts,
       totalLocations,
       revenueByDay,
       topProducts,
@@ -120,11 +140,12 @@ exports.getDashboard = catchAsync(async (req, res) => {
 });
 
 exports.getOrdersByStatus = catchAsync(async (req, res) => {
-  const { status } = req.params;
+  const matchStage = buildMatchStage(req.query);
+  const status = req.params.status;
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
   const skip = (page - 1) * limit;
-  const filter = { status };
+  const filter = { ...(matchStage.$match || {}), status };
   const [orders, total] = await Promise.all([
     Order.find(filter)
       .populate('client', 'name email')
@@ -147,11 +168,13 @@ exports.getOrdersByStatus = catchAsync(async (req, res) => {
 });
 
 exports.getOrdersByLocation = catchAsync(async (req, res) => {
-  const { locationId } = req.params;
+  const matchStage = buildMatchStage(req.query);
+  const locationId = req.params.locationId;
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
   const skip = (page - 1) * limit;
   const filter = {
+    ...(matchStage.$match || {}),
     $or: [
       { location: locationId },
       { 'items.location': locationId },
@@ -175,5 +198,18 @@ exports.getOrdersByLocation = catchAsync(async (req, res) => {
     data: { orders, total, page, totalPages: Math.ceil(total / limit) },
     error: null,
     source: 'ANALYTICS_ORDERS_BY_LOCATION',
+  });
+});
+
+exports.getFilterOptions = catchAsync(async (req, res) => {
+  const [clients, products] = await Promise.all([
+    User.find({ role: 'client' }).select('name email').sort('name').lean(),
+    Product.find().select('name').sort('name').lean(),
+  ]);
+  res.json({
+    success: true,
+    data: { clients, products },
+    error: null,
+    source: 'ANALYTICS_FILTER_OPTIONS',
   });
 });
