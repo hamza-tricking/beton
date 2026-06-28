@@ -18,12 +18,14 @@ const setTokenCookies = (res, accessToken, refreshToken) => {
     httpOnly: true,
     secure: config.isProduction,
     sameSite: 'lax',
+    path: '/',
     maxAge: 15 * 60 * 1000,
   });
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
     secure: config.isProduction,
     sameSite: 'lax',
+    path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
@@ -96,8 +98,8 @@ exports.logout = catchAsync(async (req, res) => {
     user.refreshToken = null;
     await user.save();
   }
-  res.clearCookie('accessToken');
-  res.clearCookie('refreshToken');
+  res.clearCookie('accessToken', { path: '/' });
+  res.clearCookie('refreshToken', { path: '/' });
   res.json({ success: true, data: { message: 'Logged out' }, error: null, source: 'AUTH_LOGOUT' });
 });
 
