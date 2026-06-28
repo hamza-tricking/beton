@@ -14,13 +14,17 @@ const protect = catchAsync(async (req, res, next) => {
   if (!token) {
     return next(new AppError('Not authenticated. Please log in.', 401));
   }
-  const decoded = jwt.verify(token, config.jwtAccessSecret);
-  const user = await User.findById(decoded.id).lean();
-  if (!user) {
-    return next(new AppError('User no longer exists.', 401));
+  try {
+    const decoded = jwt.verify(token, config.jwtAccessSecret);
+    const user = await User.findById(decoded.id).lean();
+    if (!user) {
+      return next(new AppError('User no longer exists.', 401));
+    }
+    req.user = user;
+    next();
+  } catch (err) {
+    return next(new AppError('Not authenticated. Invalid or expired token.', 401));
   }
-  req.user = user;
-  next();
 });
 
 const authorize = (...allowedRoles) => {

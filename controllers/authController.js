@@ -14,17 +14,18 @@ const generateRefreshToken = (userId) => {
 };
 
 const setTokenCookies = (res, accessToken, refreshToken) => {
+  // sameSite: 'none' and secure: true are required to allow cross-site cookie transmission (e.g. from local frontend to remote backend)
   res.cookie('accessToken', accessToken, {
     httpOnly: true,
-    secure: config.isProduction,
-    sameSite: 'lax',
+    secure: true,
+    sameSite: 'none',
     path: '/',
     maxAge: 15 * 60 * 1000,
   });
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
-    secure: config.isProduction,
-    sameSite: 'lax',
+    secure: true,
+    sameSite: 'none',
     path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
@@ -48,10 +49,22 @@ exports.register = catchAsync(async (req, res) => {
   const refreshToken = generateRefreshToken(user._id);
   user.refreshToken = refreshToken;
   await user.save();
+  
+  const populatedUser = await User.findById(user._id).populate('customRole').lean();
+  
   setTokenCookies(res, accessToken, refreshToken);
   res.status(201).json({
     success: true,
-    data: { user: { id: user._id, name: user.name, email: user.email, role: user.role } },
+    data: {
+      user: {
+        _id: populatedUser._id,
+        id: populatedUser._id,
+        name: populatedUser.name,
+        email: populatedUser.email,
+        role: populatedUser.role,
+        customRole: populatedUser.customRole || null,
+      }
+    },
     error: null,
     source: 'AUTH_REGISTER',
   });
@@ -59,7 +72,7 @@ exports.register = catchAsync(async (req, res) => {
 
 exports.login = catchAsync(async (req, res) => {
   const { email, password } = req.body;
-  const user = await User.findOne({ email }).select('+password');
+  const user = await User.findOne({ email }).select('+password').populate('customRole');
   if (!user || !(await bcrypt.compare(password, user.password))) {
     throw new AppError('Invalid email or password', 401);
   }
@@ -70,7 +83,16 @@ exports.login = catchAsync(async (req, res) => {
   setTokenCookies(res, accessToken, refreshToken);
   res.json({
     success: true,
-    data: { user: { id: user._id, name: user.name, email: user.email, role: user.role } },
+    data: {
+      user: {
+        _id: user._id,
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        customRole: user.customRole || null,
+      }
+    },
     error: null,
     source: 'AUTH_LOGIN',
   });
@@ -98,8 +120,9 @@ exports.logout = catchAsync(async (req, res) => {
     user.refreshToken = null;
     await user.save();
   }
-  res.clearCookie('accessToken', { path: '/' });
-  res.clearCookie('refreshToken', { path: '/' });
+  // Clear cookies with the same options they were set with (secure and sameSite: 'none')
+  res.clearCookie('accessToken', { path: '/', secure: true, sameSite: 'none' });
+  res.clearCookie('refreshToken', { path: '/', secure: true, sameSite: 'none' });
   res.json({ success: true, data: { message: 'Logged out' }, error: null, source: 'AUTH_LOGOUT' });
 });
 
