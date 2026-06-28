@@ -5,7 +5,7 @@ const { protect, authorize, checkPermission } = require('../middleware/auth');
 
 router.use(protect);
 
-router.get('/all', authorize('super_admin'), pricingController.getAllPricing);
+router.get('/all', pricingController.getAllPricing);
 
 router.post('/set', authorize('super_admin'), checkPermission('canCreateProduct'), pricingController.setPrice);
 router.post('/bulk', authorize('super_admin'), checkPermission('canCreateProduct'), pricingController.bulkSetPrices);

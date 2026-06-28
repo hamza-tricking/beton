@@ -7,7 +7,33 @@ exports.getDashboard = catchAsync(async (req, res) => {
     Order.aggregate([{ $group: { _id: null, total: { $sum: '$totalPrice' } } }]),
     Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
     Order.aggregate([
-      { $group: { _id: '$location', count: { $sum: 1 }, revenue: { $sum: '$totalPrice' } } },
+      {
+        $project: {
+          locations: {
+            $cond: {
+              if: { $and: [{ $isArray: '$items' }, { $gt: [{ $size: '$items' }, 0] }] },
+              then: '$items.location',
+              else: ['$location'],
+            },
+          },
+          revenues: {
+            $cond: {
+              if: { $and: [{ $isArray: '$items' }, { $gt: [{ $size: '$items' }, 0] }] },
+              then: '$items.totalPrice',
+              else: ['$totalPrice'],
+            },
+          },
+        },
+      },
+      { $unwind: '$locations' },
+      { $unwind: '$revenues' },
+      {
+        $group: {
+          _id: '$locations',
+          count: { $sum: 1 },
+          revenue: { $sum: '$revenues' },
+        },
+      },
       { $sort: { count: -1 } },
       { $limit: 5 },
       {

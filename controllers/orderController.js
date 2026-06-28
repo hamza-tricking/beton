@@ -4,27 +4,68 @@ const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 
-exports.createOrder = catchAsync(async (req, res) => {
-  const { clientId, productId, locationId, quantity } = req.body;
+const calcUnitPrice = async (productId, locationId) => {
   const product = await Product.findById(productId).lean();
   if (!product) throw new AppError('Product not found', 404);
-  const pricing = await ProductLocationPrice.findOne({ product: productId, location: locationId }).lean();
-  const unitPrice = product.basePrice + (pricing?.priceOffset || 0);
-  const totalPrice = unitPrice * (quantity || 1);
+  let unitPrice = product.basePrice;
+  if (locationId) {
+    const pricing = await ProductLocationPrice.findOne({ product: productId, location: locationId }).lean();
+    unitPrice = product.basePrice + (pricing?.priceOffset || 0);
+  }
+  return unitPrice;
+};
+
+exports.createOrder = catchAsync(async (req, res) => {
+  const { clientId, globalLocationId, items, productId, locationId, quantity } = req.body;
+
+  let orderItems;
+  if (items && Array.isArray(items) && items.length > 0) {
+    const computed = await Promise.all(
+      items.map(async (item) => {
+        const effectiveLocation = item.locationId || globalLocationId || null;
+        const unitPrice = await calcUnitPrice(item.productId, effectiveLocation);
+        const qty = item.quantity || 1;
+        return {
+          product: item.productId,
+          location: effectiveLocation,
+          quantity: qty,
+          unitPrice,
+          totalPrice: unitPrice * qty,
+        };
+      })
+    );
+    orderItems = computed;
+  } else if (productId) {
+    const unitPrice = await calcUnitPrice(productId, locationId);
+    const qty = quantity || 1;
+    orderItems = [{
+      product: productId,
+      location: locationId || null,
+      quantity: qty,
+      unitPrice,
+      totalPrice: unitPrice * qty,
+    }];
+  } else {
+    throw new AppError('Provide either items array or productId', 400);
+  }
+
+  const totalPrice = orderItems.reduce((sum, i) => sum + i.totalPrice, 0);
+
   const order = await Order.create({
     client: clientId,
     createdBy: req.user._id,
-    product: productId,
-    location: locationId,
-    quantity: quantity || 1,
-    unitPrice,
+    globalLocation: globalLocationId || null,
+    items: orderItems,
     totalPrice,
   });
+
   const populated = await Order.findById(order._id)
     .populate('client', 'name email')
-    .populate('product', 'name basePrice')
-    .populate('location', 'placeName')
+    .populate('globalLocation', 'placeName')
+    .populate('items.product', 'name basePrice')
+    .populate('items.location', 'placeName')
     .lean();
+
   res.status(201).json({ success: true, data: { order: populated }, error: null, source: 'ORDER_CREATE' });
 });
 
@@ -40,8 +81,9 @@ exports.getOrders = catchAsync(async (req, res) => {
     Order.find(filter)
       .populate('client', 'name email')
       .populate('createdBy', 'name')
-      .populate('product', 'name basePrice')
-      .populate('location', 'placeName')
+      .populate('globalLocation', 'placeName')
+      .populate('items.product', 'name basePrice')
+      .populate('items.location', 'placeName')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
@@ -55,8 +97,9 @@ exports.getOrder = catchAsync(async (req, res) => {
   const order = await Order.findById(req.params.id)
     .populate('client', 'name email')
     .populate('createdBy', 'name')
-    .populate('product', 'name basePrice')
-    .populate('location', 'placeName')
+    .populate('globalLocation', 'placeName')
+    .populate('items.product', 'name basePrice')
+    .populate('items.location', 'placeName')
     .lean();
   if (!order) throw new AppError('Order not found', 404);
   if (req.user.role === 'client' && order.client._id.toString() !== req.user._id.toString()) {
@@ -75,5 +118,5 @@ exports.updateOrderStatus = catchAsync(async (req, res) => {
 exports.deleteOrder = catchAsync(async (req, res) => {
   const order = await Order.findByIdAndDelete(req.params.id).lean();
   if (!order) throw new AppError('Order not found', 404);
-  res.json({ success: true, data: { message: 'Order deleted' }, error: null, source: 'ORDER_DELETE' });
+  res.status(200).json({ success: true, data: { message: 'Order deleted' }, error: null, source: 'ORDER_DELETE' });
 });
