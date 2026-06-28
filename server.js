@@ -14,8 +14,22 @@ const app = express();
 
 connectDB();
 
-app.use(helmet());
-app.use(cors({ origin: config.clientUrl, credentials: true }));
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+const allowedOrigins = [
+  config.clientUrl,
+  'http://localhost:3000',
+  'https://dmtart.pro',
+  'https://www.dmtart.pro',
+];
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
 app.use(cookieParser());
 app.use(express.json({ limit: '10kb' }));
 app.use(mongoSanitize());
