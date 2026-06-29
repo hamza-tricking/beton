@@ -4,16 +4,14 @@ const User = require('../models/User');
 async function getAssignedClients(user) {
   if (user.role === 'super_admin') return null;
 
-  // User-level assignedClients takes priority
   if (user.assignedClients && user.assignedClients.length > 0) {
     return user.assignedClients;
   }
 
-  // Fall back to role-level
   if (user.customRole) {
     const role = await CustomRole.findById(user.customRole).lean();
     if (role) {
-      if (role.analyticsViewAll) return null; // null = all clients
+      if (role.analyticsViewAll) return null;
       return role.analyticsClients || [];
     }
   }
@@ -21,25 +19,62 @@ async function getAssignedClients(user) {
   return [];
 }
 
-async function getViewPeriodDays(user) {
-  if (user.role === 'super_admin') return 0;
-
+function getPeriodConfig(user, role) {
   // User-level takes priority
-  if (user.viewPeriodDays && user.viewPeriodDays > 0) {
-    return user.viewPeriodDays;
+  if (user.periodType && user.periodType !== 'all') {
+    return {
+      type: user.periodType,
+      days: user.periodDays || 0,
+      months: user.periodMonths || 0,
+      start: user.periodStart || null,
+      end: user.periodEnd || null,
+    };
   }
+  if (user.periodType === 'all') return { type: 'all' };
 
   // Fall back to role-level
-  if (user.customRole) {
-    const role = await CustomRole.findById(user.customRole).lean();
-    if (role) return role.analyticsPeriodDays || 0;
+  if (role && role.periodType && role.periodType !== 'all') {
+    return {
+      type: role.periodType,
+      days: role.periodDays || 0,
+      months: role.periodMonths || 0,
+      start: role.periodStart || null,
+      end: role.periodEnd || null,
+    };
   }
 
-  return 0;
+  return { type: 'all' };
+}
+
+function buildDateFilter(periodConfig) {
+  if (!periodConfig || periodConfig.type === 'all') return null;
+
+  const filter = {};
+
+  if (periodConfig.type === 'days' && periodConfig.days > 0) {
+    const since = new Date();
+    since.setDate(since.getDate() - periodConfig.days);
+    filter.$gte = since;
+  } else if (periodConfig.type === 'months' && periodConfig.months > 0) {
+    const since = new Date();
+    since.setMonth(since.getMonth() - periodConfig.months);
+    filter.$gte = since;
+  } else if (periodConfig.type === 'range') {
+    if (periodConfig.start) {
+      filter.$gte = new Date(periodConfig.start);
+    }
+    if (periodConfig.end) {
+      const end = new Date(periodConfig.end);
+      end.setHours(23, 59, 59, 999);
+      filter.$lte = end;
+    }
+  }
+
+  return Object.keys(filter).length > 0 ? filter : null;
 }
 
 async function getAllowedAccountants(user) {
-  if (user.role === 'super_admin') return null;
+  if (user.role === 'super_admin') return [];
 
   if (user.customRole) {
     const role = await CustomRole.findById(user.customRole).lean();
@@ -50,7 +85,6 @@ async function getAllowedAccountants(user) {
         const accountants = await User.find({ customRole: { $in: roleIds } }).select('_id').lean();
         return accountants.map(a => a._id);
       }
-      // User-level allowedAccountants takes priority over role-level paymentsAccountants
       if (user.allowedAccountants && user.allowedAccountants.length > 0) {
         return user.allowedAccountants;
       }
@@ -63,4 +97,4 @@ async function getAllowedAccountants(user) {
   return [];
 }
 
-module.exports = { getAssignedClients, getViewPeriodDays, getAllowedAccountants };
+module.exports = { getAssignedClients, getPeriodConfig, buildDateFilter, getAllowedAccountants };

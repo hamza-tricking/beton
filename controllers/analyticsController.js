@@ -3,7 +3,7 @@ const Product = require('../models/Product');
 const Location = require('../models/Location');
 const User = require('../models/User');
 const CustomRole = require('../models/CustomRole');
-const { getAssignedClients, getViewPeriodDays } = require('../utils/accountantAccess');
+const { getAssignedClients, getPeriodConfig, buildDateFilter } = require('../utils/accountantAccess');
 const catchAsync = require('../utils/catchAsync');
 
 const buildMatchFilter = async (query, user) => {
@@ -14,12 +14,11 @@ const buildMatchFilter = async (query, user) => {
     if (clients !== null) {
       filter.client = { $in: clients.length > 0 ? clients : [] };
     }
-    const periodDays = await getViewPeriodDays(user);
-    if (periodDays > 0) {
-      const since = new Date();
-      since.setDate(since.getDate() - periodDays);
-      if (!filter.createdAt) filter.createdAt = {};
-      filter.createdAt.$gte = since;
+    const role = await CustomRole.findById(user.customRole).lean();
+    const periodConfig = getPeriodConfig(user, role);
+    const dateFilter = buildDateFilter(periodConfig);
+    if (dateFilter) {
+      filter.createdAt = dateFilter;
     }
   }
 

@@ -15,7 +15,11 @@ const userSchema = new mongoose.Schema({
     default: null,
   },
   assignedClients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  viewPeriodDays: { type: Number, default: 0 },
+  periodType: { type: String, enum: ['all', 'days', 'months', 'range'], default: 'all' },
+  periodDays: { type: Number, default: 0 },
+  periodMonths: { type: Number, default: 0 },
+  periodStart: { type: Date, default: null },
+  periodEnd: { type: Date, default: null },
   allowedAccountants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   refreshToken: { type: String, default: null },
 }, { timestamps: true });

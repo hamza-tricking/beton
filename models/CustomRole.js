@@ -13,7 +13,11 @@ const customRoleSchema = new mongoose.Schema({
   // Analytics sub-config (when canViewAnalytics is true)
   analyticsViewAll: { type: Boolean, default: true },
   analyticsClients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  analyticsPeriodDays: { type: Number, default: 0 },
+  periodType: { type: String, enum: ['all', 'days', 'months', 'range'], default: 'all' },
+  periodDays: { type: Number, default: 0 },
+  periodMonths: { type: Number, default: 0 },
+  periodStart: { type: Date, default: null },
+  periodEnd: { type: Date, default: null },
 
   // Payment acceptance sub-config
   canAcceptPayments: { type: Boolean, default: false },
