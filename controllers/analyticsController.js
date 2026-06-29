@@ -2,10 +2,8 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Location = require('../models/Location');
 const User = require('../models/User');
-const catchAsync = require('../utils/catchAsync');
-
 const CustomRole = require('../models/CustomRole');
-const User = require('../models/User');
+const catchAsync = require('../utils/catchAsync');
 
 const buildMatchFilter = async (query, user) => {
   const filter = {};
