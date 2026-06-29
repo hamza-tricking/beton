@@ -157,6 +157,7 @@ exports.acceptPayment = catchAsync(async (req, res) => {
 
   if (newRemaining <= 0) {
     order.paymentStatus = 'paid';
+    order.status = 'completed';
   } else if (newPaidAmount > 0) {
     order.paymentStatus = 'partial';
   }

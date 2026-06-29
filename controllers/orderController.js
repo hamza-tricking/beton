@@ -1,6 +1,8 @@
 const Order = require('../models/Order');
 const ProductLocationPrice = require('../models/ProductLocationPrice');
 const Product = require('../models/Product');
+const User = require('../models/User');
+const Payment = require('../models/Payment');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 const { logAction } = require('../services/historyService');
@@ -17,7 +19,7 @@ const calcUnitPrice = async (productId, locationId) => {
 };
 
 exports.createOrder = catchAsync(async (req, res) => {
-  const { clientId, globalLocationId, items, productId, locationId, quantity } = req.body;
+  const { clientId, globalLocationId, items, productId, locationId, quantity, initialPayment } = req.body;
 
   let orderItems;
   if (items && Array.isArray(items) && items.length > 0) {
@@ -51,6 +53,8 @@ exports.createOrder = catchAsync(async (req, res) => {
   }
 
   const totalPrice = orderItems.reduce((sum, i) => sum + i.totalPrice, 0);
+  const paidAmount = Math.min(Math.max(initialPayment || 0, 0), totalPrice);
+  const remainingAmount = totalPrice - paidAmount;
 
   const order = await Order.create({
     client: clientId,
@@ -58,22 +62,72 @@ exports.createOrder = catchAsync(async (req, res) => {
     globalLocation: globalLocationId || null,
     items: orderItems,
     totalPrice,
+    paidAmount,
+    remainingAmount,
+    paymentStatus: paidAmount <= 0 ? 'unpaid' : (remainingAmount <= 0 ? 'paid' : 'partial'),
+    status: remainingAmount <= 0 && paidAmount > 0 ? 'completed' : 'pending',
   });
+
+  let clientName;
+  const clientDoc = await User.findById(clientId).select('name').lean();
+  clientName = clientDoc?.name || 'غير معروف';
+
+  if (paidAmount > 0) {
+    const payment = await Payment.create({
+      order: order._id,
+      client: clientId,
+      amount: paidAmount,
+      createdBy: req.user._id,
+      status: 'accepted',
+      acceptedBy: req.user._id,
+      acceptedAt: new Date(),
+    });
+
+    order.payments.push({
+      payment: payment._id,
+      amount: paidAmount,
+      acceptedBy: req.user._id,
+      acceptedAt: new Date(),
+    });
+    await order.save();
+
+    logAction('PAYMENT_CREATE', req.user._id, {
+      targetType: 'Payment',
+      targetId: payment._id,
+      targetDisplay: `دفعة ${paidAmount} دج`,
+      description: `تم تسجيل دفعة أولى بقيمة ${paidAmount.toLocaleString()} دج للزبون ${clientName}`,
+      details: { orderId: order._id, clientId, amount: paidAmount, orderTotal: totalPrice },
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    logAction('PAYMENT_ACCEPT', req.user._id, {
+      targetType: 'Payment',
+      targetId: payment._id,
+      targetDisplay: `دفعة ${paidAmount} دج`,
+      description: `قبول الدفعة الأولى بقيمة ${paidAmount.toLocaleString()} دج من الزبون ${clientName}`,
+      details: { paymentId: payment._id, orderId: order._id, amount: paidAmount, newPaidAmount: paidAmount, newRemaining: remainingAmount },
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
 
   const populated = await Order.findById(order._id)
     .populate('client', 'name email')
     .populate('globalLocation', 'placeName')
     .populate('items.product', 'name basePrice')
     .populate('items.location', 'placeName')
+    .populate('payments.payment', 'amount status createdAt')
+    .populate('payments.acceptedBy', 'name')
     .lean();
 
-  const clientName = populated.client?.name || 'غير معروف';
+  clientName = populated.client?.name || 'غير معروف';
   logAction('ORDER_CREATE', req.user._id, {
     targetType: 'Order',
     targetId: order._id,
     targetDisplay: `طلب #${order._id}`,
     description: `قام ${req.user.name} بإنشاء طلب للزبون ${clientName} بقيمة ${totalPrice.toLocaleString()} دج`,
-    details: { clientId: clientId, clientName, totalPrice, itemsCount: orderItems.length, globalLocation: populated.globalLocation?.placeName || null },
+    details: { clientId: clientId, clientName, totalPrice, paidAmount, remainingAmount, itemsCount: orderItems.length, globalLocation: populated.globalLocation?.placeName || null },
     ip: req.ip,
     userAgent: req.headers['user-agent'],
   });
@@ -103,6 +157,8 @@ exports.getOrders = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name basePrice')
       .populate('items.location', 'placeName')
+      .populate('payments.payment', 'amount status createdAt')
+      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
@@ -119,6 +175,8 @@ exports.getOrder = catchAsync(async (req, res) => {
     .populate('globalLocation', 'placeName')
     .populate('items.product', 'name basePrice')
     .populate('items.location', 'placeName')
+    .populate('payments.payment', 'amount status createdAt')
+    .populate('payments.acceptedBy', 'name')
     .lean();
   if (!order) throw new AppError('Order not found', 404);
   if (req.user.role === 'client' && order.client._id.toString() !== req.user._id.toString()) {
@@ -177,6 +235,8 @@ exports.getAccountantOrders = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name basePrice')
       .populate('items.location', 'placeName')
+      .populate('payments.payment', 'amount status createdAt')
+      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
