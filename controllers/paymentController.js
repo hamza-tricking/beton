@@ -5,6 +5,7 @@ const CustomRole = require('../models/CustomRole');
 const { getAssignedClients, getAllowedAccountants } = require('../utils/accountantAccess');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
+const { logAction } = require('../services/historyService');
 
 exports.createPayment = catchAsync(async (req, res) => {
   const { orderId, clientId, amount } = req.body;
@@ -31,6 +32,17 @@ exports.createPayment = catchAsync(async (req, res) => {
     .populate('order', 'totalPrice status')
     .populate('createdBy', 'name')
     .lean();
+
+  const clientName = populated.client?.name || 'غير معروف';
+  logAction('PAYMENT_CREATE', req.user._id, {
+    targetType: 'Payment',
+    targetId: payment._id,
+    targetDisplay: `دفعة ${amount} دج`,
+    description: `قام ${req.user.name} بتسجيل دفعة بقيمة ${amount.toLocaleString()} دج للزبون ${clientName}`,
+    details: { orderId, clientId, clientName, amount, orderTotal: order.totalPrice },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
 
   res.status(201).json({ success: true, data: { payment: populated }, error: null, source: 'PAYMENT_CREATE' });
 });
@@ -158,6 +170,17 @@ exports.acceptPayment = catchAsync(async (req, res) => {
     .populate('acceptedBy', 'name')
     .lean();
 
+  const clientName = populated.client?.name || 'غير معروف';
+  logAction('PAYMENT_ACCEPT', req.user._id, {
+    targetType: 'Payment',
+    targetId: payment._id,
+    targetDisplay: `دفعة ${payment.amount} دج`,
+    description: `قام ${req.user.name} بقبول دفعة بقيمة ${payment.amount.toLocaleString()} دج من الزبون ${clientName}`,
+    details: { paymentId: payment._id, orderId: payment.order, amount: payment.amount, clientName, newPaidAmount, newRemaining },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.json({ success: true, data: { payment: populated }, error: null, source: 'PAYMENT_ACCEPT' });
 });
 
@@ -176,6 +199,22 @@ exports.rejectPayment = catchAsync(async (req, res) => {
   payment.acceptedBy = req.user._id;
   payment.acceptedAt = new Date();
   await payment.save();
+
+  const populatedRejected = await Payment.findById(payment._id)
+    .populate('client', 'name email')
+    .populate('createdBy', 'name')
+    .lean();
+
+  const clientName = populatedRejected?.client?.name || 'غير معروف';
+  logAction('PAYMENT_REJECT', req.user._id, {
+    targetType: 'Payment',
+    targetId: payment._id,
+    targetDisplay: `دفعة ${payment.amount} دج`,
+    description: `قام ${req.user.name} برفض دفعة بقيمة ${payment.amount.toLocaleString()} دج من الزبون ${clientName}`,
+    details: { paymentId: payment._id, orderId: payment.order, amount: payment.amount, clientName },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
 
   res.json({ success: true, data: { payment }, error: null, source: 'PAYMENT_REJECT' });
 });

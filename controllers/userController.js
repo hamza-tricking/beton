@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
+const { logAction } = require('../services/historyService');
 
 exports.createUser = catchAsync(async (req, res) => {
   const { name, email, password, role, customRole } = req.body;
@@ -9,6 +10,17 @@ exports.createUser = catchAsync(async (req, res) => {
   if (existing) throw new AppError('Email already in use', 400);
   const hashedPassword = await bcrypt.hash(password, 12);
   const user = await User.create({ name, email, password: hashedPassword, role, customRole: customRole || null });
+
+  logAction('USER_CREATE', req.user._id, {
+    targetType: 'User',
+    targetId: user._id,
+    targetDisplay: name,
+    description: `قام ${req.user.name} بإنشاء مستخدم جديد: ${name} (${email})`,
+    details: { createdUser: { name, email, role, customRole }, by: req.user.name },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.status(201).json({ success: true, data: { user: { id: user._id, name: user.name, email: user.email, role: user.role } }, error: null, source: 'USER_CREATE' });
 });
 
@@ -41,13 +53,36 @@ exports.updateUser = catchAsync(async (req, res) => {
   if (updates.customRole === '') updates.customRole = null;
   if (updates.assignedClients === '') updates.assignedClients = [];
   if (updates.allowedAccountants === '') updates.allowedAccountants = [];
+  const oldUser = await User.findById(req.params.id).lean();
   const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true }).lean();
   if (!user) throw new AppError('User not found', 404);
+
+  logAction('USER_UPDATE', req.user._id, {
+    targetType: 'User',
+    targetId: user._id,
+    targetDisplay: user.name,
+    description: `قام ${req.user.name} بتحديث المستخدم ${user.name}`,
+    details: { updatedUserId: user._id, userName: user.name, oldData: oldUser, newData: updates },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.json({ success: true, data: { user }, error: null, source: 'USER_UPDATE' });
 });
 
 exports.deleteUser = catchAsync(async (req, res) => {
   const user = await User.findByIdAndDelete(req.params.id).lean();
   if (!user) throw new AppError('User not found', 404);
+
+  logAction('USER_DELETE', req.user._id, {
+    targetType: 'User',
+    targetId: req.params.id,
+    targetDisplay: user.name,
+    description: `قام ${req.user.name} بحذف المستخدم ${user.name} (${user.email})`,
+    details: { deletedUser: { name: user.name, email: user.email, role: user.role }, by: req.user.name },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.json({ success: true, data: { message: 'User deleted' }, error: null, source: 'USER_DELETE' });
 });

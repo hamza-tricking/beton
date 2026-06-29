@@ -56,6 +56,7 @@ app.use('/api/pricing', require('./routes/pricingRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
+app.use('/api/history', require('./routes/historyRoutes'));
 
 app.all('*', (req, res, next) => {
   next(new AppError(`Route ${req.originalUrl} not found`, 404));

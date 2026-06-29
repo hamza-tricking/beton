@@ -2,6 +2,7 @@ const ProductLocationPrice = require('../models/ProductLocationPrice');
 const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
+const { logAction } = require('../services/historyService');
 
 exports.setPrice = catchAsync(async (req, res) => {
   const { productId, locationId, priceOffset } = req.body;
@@ -13,6 +14,21 @@ exports.setPrice = catchAsync(async (req, res) => {
   } else {
     pricing = await ProductLocationPrice.create({ product: productId, location: locationId, priceOffset });
   }
+
+  const productPricing = await Product.findById(productId).lean();
+  const locationPricing = await Location.findById(locationId).lean();
+  const productName = productPricing?.name || 'غير معروف';
+  const placeName = locationPricing?.placeName || 'غير معروف';
+  logAction('PRICING_SET', req.user._id, {
+    targetType: 'ProductLocationPrice',
+    targetId: pricing._id,
+    targetDisplay: `${productName} @ ${placeName}`,
+    description: `قام ${req.user.name} بتحديث تسعير ${productName} في ${placeName} (${priceOffset >= 0 ? '+' : ''}${priceOffset} دج)`,
+    details: { productId, productName, locationId, placeName, priceOffset, basePrice: productPricing?.basePrice },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.status(200).json({ success: true, data: { pricing }, error: null, source: 'PRICING_SET' });
 });
 
@@ -55,5 +71,16 @@ exports.bulkSetPrices = catchAsync(async (req, res) => {
     },
   }));
   await ProductLocationPrice.bulkWrite(ops);
+
+  logAction('PRICING_BULK', req.user._id, {
+    targetType: 'ProductLocationPrice',
+    targetId: null,
+    targetDisplay: `${prices.length} تسعيرة`,
+    description: `قام ${req.user.name} بتحديث ${prices.length} تسعيرة بشكل مجمع`,
+    details: { count: prices.length, prices: prices.map(p => ({ productId: p.productId, locationId: p.locationId, priceOffset: p.priceOffset })) },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.json({ success: true, data: { message: `${prices.length} prices updated` }, error: null, source: 'PRICING_BULK' });
 });

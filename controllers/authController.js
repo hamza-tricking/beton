@@ -4,6 +4,7 @@ const config = require('../config/env');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
+const { logAction } = require('../services/historyService');
 
 const generateAccessToken = (userId) => {
   return jwt.sign({ id: userId }, config.jwtAccessSecret, { expiresIn: config.jwtAccessExpiresIn });
@@ -51,7 +52,17 @@ exports.register = catchAsync(async (req, res) => {
   await user.save();
   
   const populatedUser = await User.findById(user._id).populate('customRole').lean();
-  
+
+  logAction('USER_REGISTER', user._id, {
+    targetType: 'User',
+    targetId: user._id,
+    targetDisplay: populatedUser.name,
+    description: `تم تسجيل حساب جديد: ${populatedUser.name} (${populatedUser.email})`,
+    details: { name: populatedUser.name, email: populatedUser.email, role: populatedUser.role },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   setTokenCookies(res, accessToken, refreshToken);
   res.status(201).json({
     success: true,
@@ -80,6 +91,17 @@ exports.login = catchAsync(async (req, res) => {
   const refreshToken = generateRefreshToken(user._id);
   user.refreshToken = refreshToken;
   await user.save();
+
+  logAction('USER_LOGIN', user._id, {
+    targetType: 'User',
+    targetId: user._id,
+    targetDisplay: user.name,
+    description: `قام ${user.name} بتسجيل الدخول`,
+    details: { email: user.email, role: user.role },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   setTokenCookies(res, accessToken, refreshToken);
   res.json({
     success: true,
@@ -120,6 +142,16 @@ exports.logout = catchAsync(async (req, res) => {
     user.refreshToken = null;
     await user.save();
   }
+  logAction('USER_LOGOUT', req.user._id, {
+    targetType: 'User',
+    targetId: req.user._id,
+    targetDisplay: req.user.name,
+    description: `قام ${req.user.name} بتسجيل الخروج`,
+    details: { email: req.user.email },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   // Clear cookies with the same options they were set with (secure and sameSite: 'none')
   res.clearCookie('accessToken', { path: '/', secure: true, sameSite: 'none' });
   res.clearCookie('refreshToken', { path: '/', secure: true, sameSite: 'none' });

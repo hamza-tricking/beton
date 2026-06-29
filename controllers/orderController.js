@@ -3,6 +3,7 @@ const ProductLocationPrice = require('../models/ProductLocationPrice');
 const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
+const { logAction } = require('../services/historyService');
 
 const calcUnitPrice = async (productId, locationId) => {
   const product = await Product.findById(productId).lean();
@@ -66,6 +67,17 @@ exports.createOrder = catchAsync(async (req, res) => {
     .populate('items.location', 'placeName')
     .lean();
 
+  const clientName = populated.client?.name || 'غير معروف';
+  logAction('ORDER_CREATE', req.user._id, {
+    targetType: 'Order',
+    targetId: order._id,
+    targetDisplay: `طلب #${order._id}`,
+    description: `قام ${req.user.name} بإنشاء طلب للزبون ${clientName} بقيمة ${totalPrice.toLocaleString()} دج`,
+    details: { clientId: clientId, clientName, totalPrice, itemsCount: orderItems.length, globalLocation: populated.globalLocation?.placeName || null },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.status(201).json({ success: true, data: { order: populated }, error: null, source: 'ORDER_CREATE' });
 });
 
@@ -117,8 +129,20 @@ exports.getOrder = catchAsync(async (req, res) => {
 
 exports.updateOrderStatus = catchAsync(async (req, res) => {
   const { status } = req.body;
+  const oldOrder = await Order.findById(req.params.id).lean();
+  if (!oldOrder) throw new AppError('Order not found', 404);
   const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true, runValidators: true }).lean();
-  if (!order) throw new AppError('Order not found', 404);
+
+  logAction('ORDER_STATUS_CHANGE', req.user._id, {
+    targetType: 'Order',
+    targetId: order._id,
+    targetDisplay: `طلب #${order._id}`,
+    description: `قام ${req.user.name} بتغيير حالة الطلب #${order._id} من "${oldOrder.status}" إلى "${status}"`,
+    details: { oldStatus: oldOrder.status, newStatus: status, totalPrice: order.totalPrice },
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
   res.json({ success: true, data: { order }, error: null, source: 'ORDER_UPDATE' });
 });
 
