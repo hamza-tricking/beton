@@ -4,11 +4,35 @@ const Location = require('../models/Location');
 const User = require('../models/User');
 const catchAsync = require('../utils/catchAsync');
 
-const buildMatchFilter = (query) => {
+const CustomRole = require('../models/CustomRole');
+const User = require('../models/User');
+
+const buildMatchFilter = async (query, user) => {
   const filter = {};
-  if (query.clientId) filter.client = query.clientId;
+
+  // If user is not super_admin, check for role-based restrictions
+  if (user.role !== 'super_admin' && user.customRole) {
+    const role = await CustomRole.findById(user.customRole).lean();
+    if (role?.canViewAnalytics) {
+      if (!role.analyticsViewAll && role.analyticsClients?.length) {
+        filter.client = { $in: role.analyticsClients };
+      }
+      if (role.analyticsPeriodDays > 0) {
+        const since = new Date();
+        since.setDate(since.getDate() - role.analyticsPeriodDays);
+        filter.createdAt = { $gte: since };
+      }
+    }
+  }
+
+  // Apply query filters on top
+  if (query.clientId) {
+    filter.client = filter.client
+      ? { $in: [query.clientId].concat(filter.client.$in || []) }
+      : query.clientId;
+  }
   if (query.startDate || query.endDate) {
-    filter.createdAt = {};
+    if (!filter.createdAt) filter.createdAt = {};
     if (query.startDate) filter.createdAt.$gte = new Date(query.startDate);
     if (query.endDate) {
       const end = new Date(query.endDate);
@@ -19,8 +43,8 @@ const buildMatchFilter = (query) => {
   return filter;
 };
 
-const buildMatchStage = (query) => {
-  const filter = buildMatchFilter(query);
+const buildMatchStage = async (query, user) => {
+  const filter = await buildMatchFilter(query, user);
   if (query.productId) {
     filter.$or = [
       { product: query.productId },
@@ -31,7 +55,7 @@ const buildMatchStage = (query) => {
 };
 
 exports.getDashboard = catchAsync(async (req, res) => {
-  const matchStage = buildMatchStage(req.query);
+  const matchStage = await buildMatchStage(req.query, req.user);
 
   const [
     totalOrders,
@@ -140,7 +164,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
 });
 
 exports.getOrdersByStatus = catchAsync(async (req, res) => {
-  const matchStage = buildMatchStage(req.query);
+  const matchStage = await buildMatchStage(req.query, req.user);
   const status = req.params.status;
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
@@ -168,7 +192,7 @@ exports.getOrdersByStatus = catchAsync(async (req, res) => {
 });
 
 exports.getOrdersByLocation = catchAsync(async (req, res) => {
-  const matchStage = buildMatchStage(req.query);
+  const matchStage = await buildMatchStage(req.query, req.user);
   const locationId = req.params.locationId;
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
@@ -202,8 +226,17 @@ exports.getOrdersByLocation = catchAsync(async (req, res) => {
 });
 
 exports.getFilterOptions = catchAsync(async (req, res) => {
+  let clientFilter = { role: 'client' };
+
+  if (req.user.role !== 'super_admin' && req.user.customRole) {
+    const role = await CustomRole.findById(req.user.customRole).lean();
+    if (role?.canViewAnalytics && !role.analyticsViewAll && role.analyticsClients?.length) {
+      clientFilter._id = { $in: role.analyticsClients };
+    }
+  }
+
   const [clients, products] = await Promise.all([
-    User.find({ role: 'client' }).select('name email').sort('name').lean(),
+    User.find(clientFilter).select('name email').sort('name').lean(),
     Product.find().select('name').sort('name').lean(),
   ]);
   res.json({

@@ -55,4 +55,23 @@ const checkPermission = (...permissions) => {
   };
 };
 
-module.exports = { protect, authorize, checkPermission };
+const checkAnyPermission = (...permissions) => {
+  return async (req, res, next) => {
+    if (req.user.role === 'super_admin') return next();
+    if (req.user.role !== 'custom_staff') {
+      return next(new AppError('You do not have permission.', 403));
+    }
+    const CustomRole = require('../models/CustomRole');
+    const role = await CustomRole.findById(req.user.customRole).lean();
+    if (!role) {
+      return next(new AppError('Custom role not found.', 403));
+    }
+    const hasAny = permissions.some((perm) => role[perm] === true);
+    if (!hasAny) {
+      return next(new AppError('You do not have permission for this action.', 403));
+    }
+    next();
+  };
+};
+
+module.exports = { protect, authorize, checkPermission, checkAnyPermission };

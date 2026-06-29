@@ -77,6 +77,13 @@ exports.getOrders = catchAsync(async (req, res) => {
   if (req.user.role === 'client') {
     filter.client = req.user._id;
   }
+  if (req.user.role === 'custom_staff' && req.user.customRole) {
+    const CustomRole = require('../models/CustomRole');
+    const role = await CustomRole.findById(req.user.customRole).lean();
+    if (role?.canManagePayments && !role.analyticsViewAll && role.analyticsClients?.length) {
+      filter.client = { $in: role.analyticsClients };
+    }
+  }
   const [orders, total] = await Promise.all([
     Order.find(filter)
       .populate('client', 'name email')
@@ -119,4 +126,41 @@ exports.deleteOrder = catchAsync(async (req, res) => {
   const order = await Order.findByIdAndDelete(req.params.id).lean();
   if (!order) throw new AppError('Order not found', 404);
   res.status(200).json({ success: true, data: { message: 'Order deleted' }, error: null, source: 'ORDER_DELETE' });
+});
+
+exports.getAccountantOrders = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 50;
+  const skip = (page - 1) * limit;
+
+  const CustomRole = require('../models/CustomRole');
+  const role = await CustomRole.findById(req.user.customRole).lean();
+  if (!role || !role.canManagePayments) throw new AppError('Not authorized', 403);
+
+  let clientIds;
+  if (role.analyticsViewAll) {
+    const User = require('../models/User');
+    const clients = await User.find({ role: 'client' }).select('_id').lean();
+    clientIds = clients.map(c => c._id);
+  } else {
+    clientIds = role.analyticsClients || [];
+  }
+
+  const filter = { client: { $in: clientIds } };
+  if (req.query.clientId) filter.client = { $in: [req.query.clientId] };
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .populate('client', 'name email')
+      .populate('globalLocation', 'placeName')
+      .populate('items.product', 'name basePrice')
+      .populate('items.location', 'placeName')
+      .sort('-createdAt')
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Order.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, data: { orders, total, page, totalPages: Math.ceil(total / limit) }, error: null, source: 'ORDER_ACCOUNTANT_LIST' });
 });

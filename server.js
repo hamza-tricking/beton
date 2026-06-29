@@ -53,6 +53,7 @@ app.use('/api/products', require('./routes/productRoutes'));
 app.use('/api/locations', require('./routes/locationRoutes'));
 app.use('/api/pricing', require('./routes/pricingRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/payments', require('./routes/paymentRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
 
 app.all('*', (req, res, next) => {
