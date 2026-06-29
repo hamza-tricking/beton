@@ -17,7 +17,11 @@ exports.getUsers = catchAsync(async (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 20;
   const skip = (page - 1) * limit;
   const [users, total] = await Promise.all([
-    User.find().populate('customRole').sort('-createdAt').skip(skip).limit(limit).lean(),
+    User.find()
+      .populate('customRole')
+      .populate('assignedClients', 'name email')
+      .populate('allowedAccountants', 'name email')
+      .sort('-createdAt').skip(skip).limit(limit).lean(),
     User.countDocuments(),
   ]);
   res.json({ success: true, data: { users, total, page, totalPages: Math.ceil(total / limit) }, error: null, source: 'USER_LIST' });
@@ -35,6 +39,8 @@ exports.updateUser = catchAsync(async (req, res) => {
     updates.password = await bcrypt.hash(updates.password, 12);
   }
   if (updates.customRole === '') updates.customRole = null;
+  if (updates.assignedClients === '') updates.assignedClients = [];
+  if (updates.allowedAccountants === '') updates.allowedAccountants = [];
   const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true }).lean();
   if (!user) throw new AppError('User not found', 404);
   res.json({ success: true, data: { user }, error: null, source: 'USER_UPDATE' });

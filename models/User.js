@@ -14,6 +14,9 @@ const userSchema = new mongoose.Schema({
     ref: 'CustomRole',
     default: null,
   },
+  assignedClients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  viewPeriodDays: { type: Number, default: 0 },
+  allowedAccountants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   refreshToken: { type: String, default: null },
 }, { timestamps: true });
 

@@ -2,6 +2,7 @@ const Payment = require('../models/Payment');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const CustomRole = require('../models/CustomRole');
+const { getAssignedClients, getAllowedAccountants } = require('../utils/accountantAccess');
 const AppError = require('../utils/AppError');
 const catchAsync = require('../utils/catchAsync');
 
@@ -40,34 +41,18 @@ exports.getPayments = catchAsync(async (req, res) => {
   const skip = (page - 1) * limit;
   const filter = {};
 
-  if (req.user.role !== 'super_admin') {
+  if (req.user.role === 'custom_staff') {
     const role = await CustomRole.findById(req.user.customRole).lean();
     if (role?.canManagePayments) {
-      const roleWithClients = await CustomRole.findById(req.user.customRole).populate('analyticsClients').lean();
-      const clientIds = roleWithClients?.analyticsViewAll
-        ? (await User.find({ role: 'client' }).select('_id').lean()).map(u => u._id)
-        : (roleWithClients?.analyticsClients || []).map(c => c._id?.toString() ? c._id : c);
-      filter.client = { $in: clientIds };
+      const clients = await getAssignedClients(req.user);
+      if (clients !== null) {
+        filter.client = { $in: clients.length > 0 ? clients : [] };
+      }
       filter.createdBy = req.user._id;
     } else if (role?.canAcceptPayments) {
-      const accountantIds = role?.paymentsAcceptAll
-        ? (await CustomRole.find({ canManagePayments: true }).populate({
-            path: 'paymentsAccountants',
-            match: { role: 'custom_staff' },
-          }).lean()).reduce((acc, r) => {
-            if (r.paymentsAcceptAll) return acc;
-            return [...acc, ...r.paymentsAccountants.map(a => a._id?.toString() ? a._id : a)];
-          }, [])
-        : [];
-      if (role?.paymentsAcceptAll) {
-        const accountantUsers = await User.find({ role: 'custom_staff' }).populate({
-          path: 'customRole',
-          match: { canManagePayments: true },
-        }).lean();
-        const accIds = accountantUsers.filter(u => u.customRole).map(u => u._id);
-        filter.createdBy = { $in: accIds };
-      } else if (role?.paymentsAccountants?.length) {
-        filter.createdBy = { $in: role.paymentsAccountants };
+      const accountants = await getAllowedAccountants(req.user);
+      if (accountants.length > 0) {
+        filter.createdBy = { $in: accountants };
       } else {
         filter.createdBy = { $in: [] };
       }
@@ -96,14 +81,14 @@ exports.getPendingPayments = catchAsync(async (req, res) => {
   const skip = (page - 1) * limit;
   const filter = { status: 'pending' };
 
-  if (req.user.role !== 'super_admin') {
+  if (req.user.role === 'custom_staff') {
     const role = await CustomRole.findById(req.user.customRole).lean();
-    if (role?.canAcceptPayments) {
-      if (!role.paymentsAcceptAll && role.paymentsAccountants?.length) {
-        filter.createdBy = { $in: role.paymentsAccountants };
-      }
+    if (!role?.canAcceptPayments) throw new AppError('Not authorized', 403);
+    const accountants = await getAllowedAccountants(req.user);
+    if (accountants.length > 0) {
+      filter.createdBy = { $in: accountants };
     } else {
-      throw new AppError('Not authorized', 403);
+      filter.createdBy = { $in: [] };
     }
   }
 
@@ -131,8 +116,9 @@ exports.acceptPayment = catchAsync(async (req, res) => {
   if (req.user.role !== 'super_admin') {
     const role = await CustomRole.findById(req.user.customRole).lean();
     if (!role?.canAcceptPayments) throw new AppError('Not authorized', 403);
-    if (!role.paymentsAcceptAll && role.paymentsAccountants?.length) {
-      const accStr = role.paymentsAccountants.map(a => a.toString());
+    const accountants = await getAllowedAccountants(req.user);
+    if (accountants.length > 0) {
+      const accStr = accountants.map(a => a.toString());
       if (!accStr.includes(payment.createdBy.toString())) {
         throw new AppError('Not authorized to accept from this accountant', 403);
       }

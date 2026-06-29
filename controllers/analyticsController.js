@@ -3,23 +3,23 @@ const Product = require('../models/Product');
 const Location = require('../models/Location');
 const User = require('../models/User');
 const CustomRole = require('../models/CustomRole');
+const { getAssignedClients, getViewPeriodDays } = require('../utils/accountantAccess');
 const catchAsync = require('../utils/catchAsync');
 
 const buildMatchFilter = async (query, user) => {
   const filter = {};
 
-  // If user is not super_admin, check for role-based restrictions
-  if (user.role !== 'super_admin' && user.customRole) {
-    const role = await CustomRole.findById(user.customRole).lean();
-    if (role?.canViewAnalytics) {
-      if (!role.analyticsViewAll && role.analyticsClients?.length) {
-        filter.client = { $in: role.analyticsClients };
-      }
-      if (role.analyticsPeriodDays > 0) {
-        const since = new Date();
-        since.setDate(since.getDate() - role.analyticsPeriodDays);
-        filter.createdAt = { $gte: since };
-      }
+  if (user.role === 'custom_staff') {
+    const clients = await getAssignedClients(user);
+    if (clients !== null) {
+      filter.client = { $in: clients.length > 0 ? clients : [] };
+    }
+    const periodDays = await getViewPeriodDays(user);
+    if (periodDays > 0) {
+      const since = new Date();
+      since.setDate(since.getDate() - periodDays);
+      if (!filter.createdAt) filter.createdAt = {};
+      filter.createdAt.$gte = since;
     }
   }
 
@@ -226,10 +226,10 @@ exports.getOrdersByLocation = catchAsync(async (req, res) => {
 exports.getFilterOptions = catchAsync(async (req, res) => {
   let clientFilter = { role: 'client' };
 
-  if (req.user.role !== 'super_admin' && req.user.customRole) {
-    const role = await CustomRole.findById(req.user.customRole).lean();
-    if (role?.canViewAnalytics && !role.analyticsViewAll && role.analyticsClients?.length) {
-      clientFilter._id = { $in: role.analyticsClients };
+  if (req.user.role === 'custom_staff') {
+    const clients = await getAssignedClients(req.user);
+    if (clients !== null) {
+      clientFilter._id = { $in: clients.length > 0 ? clients : [] };
     }
   }
 

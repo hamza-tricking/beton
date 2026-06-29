@@ -77,11 +77,11 @@ exports.getOrders = catchAsync(async (req, res) => {
   if (req.user.role === 'client') {
     filter.client = req.user._id;
   }
-  if (req.user.role === 'custom_staff' && req.user.customRole) {
-    const CustomRole = require('../models/CustomRole');
-    const role = await CustomRole.findById(req.user.customRole).lean();
-    if (role?.canManagePayments && !role.analyticsViewAll && role.analyticsClients?.length) {
-      filter.client = { $in: role.analyticsClients };
+  if (req.user.role === 'custom_staff') {
+    const { getAssignedClients } = require('../utils/accountantAccess');
+    const clients = await getAssignedClients(req.user);
+    if (clients !== null) {
+      filter.client = { $in: clients.length > 0 ? clients : [] };
     }
   }
   const [orders, total] = await Promise.all([
@@ -133,20 +133,18 @@ exports.getAccountantOrders = catchAsync(async (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 50;
   const skip = (page - 1) * limit;
 
-  const CustomRole = require('../models/CustomRole');
-  const role = await CustomRole.findById(req.user.customRole).lean();
-  if (!role || !role.canManagePayments) throw new AppError('Not authorized', 403);
-
-  let clientIds;
-  if (role.analyticsViewAll) {
-    const User = require('../models/User');
-    const clients = await User.find({ role: 'client' }).select('_id').lean();
-    clientIds = clients.map(c => c._id);
-  } else {
-    clientIds = role.analyticsClients || [];
+  const { getAssignedClients } = require('../utils/accountantAccess');
+  const clients = await getAssignedClients(req.user);
+  if (clients === null) {
+    // super_admin or unrestricted — show all
+  } else if (clients.length === 0) {
+    return res.json({ success: true, data: { orders: [], total: 0, page, totalPages: 0 }, error: null, source: 'ORDER_ACCOUNTANT_LIST' });
   }
 
-  const filter = { client: { $in: clientIds } };
+  const filter = {};
+  if (clients !== null) {
+    filter.client = { $in: clients };
+  }
   if (req.query.clientId) filter.client = { $in: [req.query.clientId] };
 
   const [orders, total] = await Promise.all([
