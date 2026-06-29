@@ -20,30 +20,36 @@ async function getAssignedClients(user) {
 }
 
 function getPeriodConfig(user, role) {
-  // User-level takes priority
-  if (user.periodType && user.periodType !== 'all') {
-    return {
-      type: user.periodType,
-      days: user.periodDays || 0,
-      months: user.periodMonths || 0,
-      start: user.periodStart || null,
-      end: user.periodEnd || null,
-    };
+  // Empty string or undefined = use role-level settings
+  if (!user.periodType || user.periodType === '') {
+    if (role) {
+      return getPeriodConfigFromRole(role);
+    }
+    return { type: 'all' };
   }
+
+  // User explicitly chose 'all' — override role
   if (user.periodType === 'all') return { type: 'all' };
 
-  // Fall back to role-level
-  if (role && role.periodType && role.periodType !== 'all') {
-    return {
-      type: role.periodType,
-      days: role.periodDays || 0,
-      months: role.periodMonths || 0,
-      start: role.periodStart || null,
-      end: role.periodEnd || null,
-    };
-  }
+  // User chose days/months/range — override role
+  return {
+    type: user.periodType,
+    days: user.periodDays || 0,
+    months: user.periodMonths || 0,
+    start: user.periodStart || null,
+    end: user.periodEnd || null,
+  };
+}
 
-  return { type: 'all' };
+function getPeriodConfigFromRole(role) {
+  if (!role || !role.periodType || role.periodType === 'all') return { type: 'all' };
+  return {
+    type: role.periodType,
+    days: role.periodDays || 0,
+    months: role.periodMonths || 0,
+    start: role.periodStart || null,
+    end: role.periodEnd || null,
+  };
 }
 
 function buildDateFilter(periodConfig) {
