@@ -71,6 +71,28 @@ exports.getPayments = catchAsync(async (req, res) => {
     }
   }
 
+  // Apply query filters on top of role-based filter (intersect with $in if role already restricted)
+  if (req.query.clientId) {
+    filter.client = filter.client?.$in
+      ? { $in: filter.client.$in.filter((c) => c.toString() === req.query.clientId) }
+      : req.query.clientId;
+  }
+  if (req.query.createdBy) {
+    filter.createdBy = filter.createdBy?.$in
+      ? { $in: filter.createdBy.$in.filter((c) => c.toString() === req.query.createdBy) }
+      : req.query.createdBy;
+  }
+  if (req.query.acceptedBy) filter.acceptedBy = req.query.acceptedBy;
+  if (req.query.startDate || req.query.endDate) {
+    filter.createdAt = {};
+    if (req.query.startDate) filter.createdAt.$gte = new Date(req.query.startDate);
+    if (req.query.endDate) {
+      const end = new Date(req.query.endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = end;
+    }
+  }
+
   const [payments, total] = await Promise.all([
     Payment.find(filter)
       .populate('client', 'name email')
@@ -218,6 +240,52 @@ exports.rejectPayment = catchAsync(async (req, res) => {
   });
 
   res.json({ success: true, data: { payment }, error: null, source: 'PAYMENT_REJECT' });
+});
+
+exports.getPaymentFilterOptions = catchAsync(async (req, res) => {
+  let clientFilter = { role: 'client' };
+  let paymentBaseFilter = {};
+
+  if (req.user.role === 'custom_staff') {
+    const role = await CustomRole.findById(req.user.customRole).lean();
+    const assignedClients = await getAssignedClients(req.user);
+
+    if (role?.canManagePayments) {
+      if (assignedClients !== null) {
+        clientFilter._id = { $in: assignedClients.length > 0 ? assignedClients : [] };
+        paymentBaseFilter.client = { $in: assignedClients.length > 0 ? assignedClients : [] };
+      }
+      paymentBaseFilter.createdBy = req.user._id;
+    } else if (role?.canAcceptPayments) {
+      const accountants = await getAllowedAccountants(req.user);
+      paymentBaseFilter.createdBy = accountants.length > 0 ? { $in: accountants } : { $in: [] };
+      if (assignedClients !== null) {
+        clientFilter._id = { $in: assignedClients.length > 0 ? assignedClients : [] };
+      }
+    }
+  }
+
+  const [clients, createdByUserIds, acceptedByUserIds] = await Promise.all([
+    User.find(clientFilter).select('name email').sort('name').lean(),
+    Payment.distinct('createdBy', paymentBaseFilter),
+    Payment.distinct('acceptedBy', { ...paymentBaseFilter, acceptedBy: { $ne: null } }),
+  ]);
+
+  const [createdByDocs, acceptedByDocs] = await Promise.all([
+    createdByUserIds.length > 0
+      ? User.find({ _id: { $in: createdByUserIds } }).select('name email').sort('name').lean()
+      : [],
+    acceptedByUserIds.length > 0
+      ? User.find({ _id: { $in: acceptedByUserIds } }).select('name email').sort('name').lean()
+      : [],
+  ]);
+
+  res.json({
+    success: true,
+    data: { clients, createdByUsers: createdByDocs, acceptedByUsers: acceptedByDocs },
+    error: null,
+    source: 'PAYMENT_FILTER_OPTIONS',
+  });
 });
 
 exports.getPaymentAccountants = catchAsync(async (req, res) => {
