@@ -438,6 +438,7 @@ exports.getClientStatement = catchAsync(async (req, res) => {
       total,
       page,
       totalPages: Math.ceil(total / limit),
+      currentBalance: balance,
     },
     error: null,
     source: 'CLIENT_STATEMENT',
