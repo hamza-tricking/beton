@@ -15,18 +15,18 @@ const generateRefreshToken = (userId) => {
 };
 
 const setTokenCookies = (res, accessToken, refreshToken) => {
-  // sameSite: 'none' and secure: true are required to allow cross-site cookie transmission (e.g. from local frontend to remote backend)
+  // sameSite: 'lax' works with same-origin proxy (Next.js rewrites /api/* → backend)
   res.cookie('accessToken', accessToken, {
     httpOnly: true,
-    secure: true,
-    sameSite: 'none',
+    secure: config.isProduction,
+    sameSite: 'lax',
     path: '/',
     maxAge: 15 * 60 * 1000,
   });
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
-    secure: true,
-    sameSite: 'none',
+    secure: config.isProduction,
+    sameSite: 'lax',
     path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
@@ -152,9 +152,8 @@ exports.logout = catchAsync(async (req, res) => {
     userAgent: req.headers['user-agent'],
   });
 
-  // Clear cookies with the same options they were set with (secure and sameSite: 'none')
-  res.clearCookie('accessToken', { path: '/', secure: true, sameSite: 'none' });
-  res.clearCookie('refreshToken', { path: '/', secure: true, sameSite: 'none' });
+  res.clearCookie('accessToken', { path: '/', secure: config.isProduction, sameSite: 'lax' });
+  res.clearCookie('refreshToken', { path: '/', secure: config.isProduction, sameSite: 'lax' });
   res.json({ success: true, data: { message: 'Logged out' }, error: null, source: 'AUTH_LOGOUT' });
 });
 
