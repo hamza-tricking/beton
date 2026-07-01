@@ -157,7 +157,11 @@ exports.getOrders = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name basePrice')
       .populate('items.location', 'placeName')
-      .populate('payments.payment', 'amount status createdAt')
+      .populate({
+        path: 'payments.payment',
+        select: 'amount status createdAt createdBy',
+        populate: { path: 'createdBy', select: 'name' },
+      })
       .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
@@ -175,7 +179,11 @@ exports.getOrder = catchAsync(async (req, res) => {
     .populate('globalLocation', 'placeName')
     .populate('items.product', 'name basePrice')
     .populate('items.location', 'placeName')
-    .populate('payments.payment', 'amount status createdAt')
+    .populate({
+      path: 'payments.payment',
+      select: 'amount status createdAt createdBy',
+      populate: { path: 'createdBy', select: 'name' },
+    })
     .populate('payments.acceptedBy', 'name')
     .lean();
   if (!order) throw new AppError('Order not found', 404);
@@ -235,7 +243,11 @@ exports.getAccountantOrders = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name basePrice')
       .populate('items.location', 'placeName')
-      .populate('payments.payment', 'amount status createdAt')
+      .populate({
+        path: 'payments.payment',
+        select: 'amount status createdAt createdBy',
+        populate: { path: 'createdBy', select: 'name' },
+      })
       .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)

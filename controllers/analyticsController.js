@@ -64,12 +64,14 @@ exports.getDashboard = catchAsync(async (req, res) => {
     revenueByDay,
     topProducts,
     recentOrders,
+    totalDebts,
+    debtsByClient,
   ] = await Promise.all([
     Order.countDocuments(matchStage.$match || {}),
-    Order.aggregate([matchStage, { $group: { _id: null, total: { $sum: '$totalPrice' } } }]),
+    Order.aggregate([matchStage, { $group: { _id: null, total: { $sum: '$paidAmount' } } }]),
     Order.aggregate([
       matchStage,
-      { $group: { _id: '$status', count: { $sum: 1 }, revenue: { $sum: '$totalPrice' } } },
+      { $group: { _id: '$status', count: { $sum: 1 }, revenue: { $sum: '$paidAmount' } } },
     ]),
     Order.aggregate([
       matchStage,
@@ -108,7 +110,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
           orders: { $sum: 1 },
-          revenue: { $sum: '$totalPrice' },
+          revenue: { $sum: '$paidAmount' },
         },
       },
       { $sort: { _id: 1 } },
@@ -137,9 +139,29 @@ exports.getDashboard = catchAsync(async (req, res) => {
     Order.find(matchStage.$match || {})
       .populate('client', 'name')
       .populate('items.product', 'name')
+      .populate({
+        path: 'payments.payment',
+        select: 'amount status createdAt createdBy',
+        populate: { path: 'createdBy', select: 'name' },
+      })
+      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .limit(10)
       .lean(),
+    Order.aggregate([
+      matchStage,
+      { $group: { _id: null, total: { $sum: '$remainingAmount' } } },
+    ]),
+    Order.aggregate([
+      matchStage,
+      { $match: { remainingAmount: { $gt: 0 } } },
+      { $group: { _id: '$client', totalDebt: { $sum: '$remainingAmount' }, orderCount: { $sum: 1 } } },
+      { $sort: { totalDebt: -1 } },
+      { $limit: 10 },
+      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'client' } },
+      { $unwind: { path: '$client', preserveNullAndEmptyArrays: true } },
+      { $project: { clientName: '$client.name', totalDebt: 1, orderCount: 1 } },
+    ]),
   ]);
 
   res.json({
@@ -154,6 +176,8 @@ exports.getDashboard = catchAsync(async (req, res) => {
       revenueByDay,
       topProducts,
       recentOrders,
+      totalDebts: totalDebts[0]?.total || 0,
+      debtsByClient,
     },
     error: null,
     source: 'ANALYTICS_DASHBOARD',
@@ -174,6 +198,12 @@ exports.getOrdersByStatus = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name')
       .populate('items.location', 'placeName')
+      .populate({
+        path: 'payments.payment',
+        select: 'amount status createdAt createdBy',
+        populate: { path: 'createdBy', select: 'name' },
+      })
+      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
@@ -208,6 +238,12 @@ exports.getOrdersByLocation = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name')
       .populate('items.location', 'placeName')
+      .populate({
+        path: 'payments.payment',
+        select: 'amount status createdAt createdBy',
+        populate: { path: 'createdBy', select: 'name' },
+      })
+      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
