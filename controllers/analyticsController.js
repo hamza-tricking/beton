@@ -161,7 +161,24 @@ exports.getDashboard = catchAsync(async (req, res) => {
     Location.countDocuments(),
   ]);
 
-  const recentOrders = allOrders.slice(0, 10);
+  // Pagination & sorting for orders table
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.max(parseInt(req.query.limit, 10) || 10, 1);
+  const sortBy = req.query.sortBy || 'date';
+  const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+
+  const sortedOrders = [...allOrders].sort((a, b) => {
+    let cmp = 0;
+    if (sortBy === 'amount') cmp = (a.totalPrice || 0) - (b.totalPrice || 0);
+    else if (sortBy === 'debt') cmp = (a.remainingAmount || 0) - (b.remainingAmount || 0);
+    else cmp = new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+    return sortOrder * cmp;
+  });
+
+  const ordersTotal = sortedOrders.length;
+  const totalPages = Math.ceil(ordersTotal / limit) || 1;
+  const skip = (page - 1) * limit;
+  const orders = sortedOrders.slice(skip, skip + limit);
 
   res.json({
     success: true,
@@ -174,9 +191,13 @@ exports.getDashboard = catchAsync(async (req, res) => {
       totalLocations,
       revenueByDay,
       topProducts,
-      recentOrders,
       totalDebts,
       debtsByClient,
+      orders,
+      ordersTotal,
+      page,
+      totalPages,
+      limit,
     },
     error: null,
     source: 'ANALYTICS_DASHBOARD',
