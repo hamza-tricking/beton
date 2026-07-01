@@ -140,6 +140,7 @@ exports.getOrders = catchAsync(async (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 20;
   const skip = (page - 1) * limit;
   const filter = {};
+
   if (req.user.role === 'client') {
     filter.client = req.user._id;
   }
@@ -150,6 +151,37 @@ exports.getOrders = catchAsync(async (req, res) => {
       filter.client = { $in: clients.length > 0 ? clients : [] };
     }
   }
+
+  // Query filters
+  if (req.query.clientId) {
+    filter.client = filter.client?.$in
+      ? { $in: filter.client.$in.filter((c) => c.toString() === req.query.clientId) }
+      : req.query.clientId;
+  }
+  if (req.query.productId) {
+    filter.$or = [
+      { product: req.query.productId },
+      { 'items.product': req.query.productId },
+    ];
+  }
+  if (req.query.startDate || req.query.endDate) {
+    filter.createdAt = {};
+    if (req.query.startDate) filter.createdAt.$gte = new Date(req.query.startDate);
+    if (req.query.endDate) {
+      const end = new Date(req.query.endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = end;
+    }
+  }
+
+  // Sorting
+  const sortBy = req.query.sortBy || 'date';
+  const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+  const sort = {};
+  if (sortBy === 'amount') sort.totalPrice = sortOrder;
+  else if (sortBy === 'debt') sort.remainingAmount = sortOrder;
+  else sort.createdAt = sortOrder;
+
   const [orders, total] = await Promise.all([
     Order.find(filter)
       .populate('client', 'name email')
@@ -163,7 +195,7 @@ exports.getOrders = catchAsync(async (req, res) => {
         populate: { path: 'createdBy', select: 'name' },
       })
       .populate('payments.acceptedBy', 'name')
-      .sort('-createdAt')
+      .sort(sort)
       .skip(skip)
       .limit(limit)
       .lean(),
