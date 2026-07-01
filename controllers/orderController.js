@@ -18,7 +18,7 @@ const calcUnitPrice = async (productId, locationId) => {
 };
 
 exports.createOrder = catchAsync(async (req, res) => {
-  const { clientId, globalLocationId, items, productId, locationId, quantity } = req.body;
+  const { clientId, globalLocationId, items, productId, locationId, quantity, initialPayment } = req.body;
 
   let orderItems;
   if (items && Array.isArray(items) && items.length > 0) {
@@ -52,6 +52,9 @@ exports.createOrder = catchAsync(async (req, res) => {
   }
 
   const totalPrice = orderItems.reduce((sum, i) => sum + i.totalPrice, 0);
+  const paid = Math.min(Math.max(Number(initialPayment) || 0, 0), totalPrice);
+  const remaining = totalPrice - paid;
+  const paymentStatus = paid >= totalPrice ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
 
   const order = await Order.create({
     client: clientId,
@@ -59,14 +62,14 @@ exports.createOrder = catchAsync(async (req, res) => {
     globalLocation: globalLocationId || null,
     items: orderItems,
     totalPrice,
-    paidAmount: 0,
-    remainingAmount: totalPrice,
-    paymentStatus: 'unpaid',
+    paidAmount: paid,
+    remainingAmount: remaining,
+    paymentStatus,
     status: 'pending',
   });
 
-  // Update client's total debt
-  await User.findByIdAndUpdate(clientId, { $inc: { totalDebt: totalPrice } });
+  // Update client's total debt (only unpaid portion)
+  await User.findByIdAndUpdate(clientId, { $inc: { totalDebt: remaining } });
 
   let clientName;
   const clientDoc = await User.findById(clientId).select('name').lean();
