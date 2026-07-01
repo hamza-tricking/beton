@@ -278,3 +278,38 @@ exports.getFilterOptions = catchAsync(async (req, res) => {
     source: 'ANALYTICS_FILTER_OPTIONS',
   });
 });
+
+exports.getOrdersByClientDebt = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const skip = (page - 1) * limit;
+  const filter = {
+    client: toObjectId(req.params.clientId),
+    remainingAmount: { $gt: 0 },
+  };
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .populate('client', 'name email')
+      .populate('createdBy', 'name')
+      .populate('globalLocation', 'placeName')
+      .populate('items.product', 'name')
+      .populate('items.location', 'placeName')
+      .populate({
+        path: 'payments.payment',
+        select: 'amount status createdAt createdBy',
+        populate: { path: 'createdBy', select: 'name' },
+      })
+      .populate('payments.acceptedBy', 'name')
+      .sort('-createdAt')
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Order.countDocuments(filter),
+  ]);
+  res.json({
+    success: true,
+    data: { orders, total, page, totalPages: Math.ceil(total / limit) },
+    error: null,
+    source: 'ANALYTICS_ORDERS_BY_CLIENT_DEBT',
+  });
+});
