@@ -58,142 +58,124 @@ const buildMatchStage = async (query, user) => {
   return { $match: filter };
 };
 
-const buildMatchPipeline = async (query, user) => {
-  const filter = await buildMatchFilter(query, user);
-  if (query.productId) {
+exports.getDashboard = catchAsync(async (req, res) => {
+  const filter = await buildMatchFilter(req.query, req.user);
+  const hasProductFilter = !!req.query.productId;
+  if (hasProductFilter) {
+    const productId = toObjectId(req.query.productId);
     filter.$or = [
-      { product: query.productId },
-      { 'items.product': query.productId },
+      { product: productId },
+      { 'items.product': productId },
     ];
   }
-  return filter;
-};
 
-exports.getDashboard = catchAsync(async (req, res) => {
-  const baseFilter = await buildMatchPipeline(req.query, req.user);
+  const allOrders = await Order.find(filter)
+    .populate('client', 'name')
+    .populate('items.product', 'name')
+    .populate('items.location', 'placeName')
+    .populate({
+      path: 'payments.payment',
+      select: 'amount status createdAt createdBy',
+      populate: { path: 'createdBy', select: 'name' },
+    })
+    .populate('payments.acceptedBy', 'name')
+    .sort('-createdAt')
+    .lean();
 
-  const makeMatch = () => [{ $match: { ...baseFilter } }];
+  const totalOrders = allOrders.length;
+  const totalRevenue = allOrders.reduce((sum, o) => sum + (o.paidAmount || 0), 0);
 
-  const [
-    totalOrders,
-    totalRevenue,
-    ordersByStatus,
-    topLocations,
-    totalProducts,
-    totalLocations,
-    revenueByDay,
-    topProducts,
-    recentOrders,
-    totalDebts,
-    debtsByClient,
-  ] = await Promise.all([
-    Order.countDocuments(baseFilter),
-    Order.aggregate([...makeMatch(), { $group: { _id: null, total: { $sum: '$paidAmount' } } }]),
-    Order.aggregate([
-      ...makeMatch(),
-      { $group: { _id: '$status', count: { $sum: 1 }, revenue: { $sum: '$paidAmount' } } },
-    ]),
-    Order.aggregate([
-      ...makeMatch(),
-      {
-        $project: {
-          locations: {
-            $cond: {
-              if: { $and: [{ $isArray: '$items' }, { $gt: [{ $size: '$items' }, 0] }] },
-              then: '$items.location',
-              else: ['$location'],
-            },
-          },
-          revenues: {
-            $cond: {
-              if: { $and: [{ $isArray: '$items' }, { $gt: [{ $size: '$items' }, 0] }] },
-              then: '$items.totalPrice',
-              else: ['$totalPrice'],
-            },
-          },
-        },
-      },
-      { $unwind: '$locations' },
-      { $unwind: '$revenues' },
-      { $group: { _id: '$locations', count: { $sum: 1 }, revenue: { $sum: '$revenues' } } },
-      { $sort: { count: -1 } },
-      { $limit: 5 },
-      { $lookup: { from: 'locations', localField: '_id', foreignField: '_id', as: 'location' } },
-      { $unwind: { path: '$location', preserveNullAndEmptyArrays: true } },
-      { $project: { placeName: '$location.placeName', count: 1, revenue: 1 } },
-    ]),
+  const statusMap = {};
+  for (const o of allOrders) {
+    const st = o.status || 'unknown';
+    if (!statusMap[st]) statusMap[st] = { count: 0, revenue: 0 };
+    statusMap[st].count++;
+    statusMap[st].revenue += o.paidAmount || 0;
+  }
+  const ordersByStatus = Object.entries(statusMap).map(([status, data]) => ({ _id: status, ...data }));
+
+  const locationMap = {};
+  for (const o of allOrders) {
+    const locs = [];
+    if (o.items?.length) {
+      for (const item of o.items) {
+        if (item.location?.placeName) locs.push(item.location.placeName);
+        const locName = item.location?.placeName || 'بدون منطقة';
+        if (!locationMap[locName]) locationMap[locName] = { count: 0, revenue: 0 };
+        locationMap[locName].count++;
+        locationMap[locName].revenue += item.totalPrice || 0;
+      }
+    } else {
+      const locName = o.location?.placeName || 'بدون منطقة';
+      if (!locationMap[locName]) locationMap[locName] = { count: 0, revenue: 0 };
+      locationMap[locName].count++;
+      locationMap[locName].revenue += o.totalPrice || 0;
+    }
+  }
+  const topLocations = Object.entries(locationMap)
+    .map(([placeName, data]) => ({ _id: placeName, placeName, ...data }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const dayMap = {};
+  for (const o of allOrders) {
+    const day = o.createdAt ? new Date(o.createdAt).toISOString().slice(0, 10) : 'unknown';
+    if (!dayMap[day]) dayMap[day] = { orders: 0, revenue: 0 };
+    dayMap[day].orders++;
+    dayMap[day].revenue += o.paidAmount || 0;
+  }
+  const revenueByDay = Object.entries(dayMap)
+    .map(([d, data]) => ({ _id: d, ...data }))
+    .sort((a, b) => a._id.localeCompare(b._id));
+
+  const productMap = {};
+  for (const o of allOrders) {
+    const prods = o.items?.length ? o.items.map(i => i.product?.name || 'محذوف') : [o.product?.name || 'محذوف'];
+    for (const name of prods) {
+      if (!productMap[name]) productMap[name] = 0;
+      productMap[name]++;
+    }
+  }
+  const topProducts = Object.entries(productMap)
+    .map(([name, count]) => ({ _id: name, name, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const totalDebts = allOrders.reduce((sum, o) => sum + (o.remainingAmount || 0), 0);
+
+  const clientDebtMap = {};
+  for (const o of allOrders) {
+    if ((o.remainingAmount || 0) <= 0) continue;
+    const cid = o.client?._id || o.client || 'unknown';
+    const cname = o.client?.name || 'غير معروف';
+    if (!clientDebtMap[cid]) clientDebtMap[cid] = { clientId: cid, clientName: cname, totalDebt: 0, orderCount: 0 };
+    clientDebtMap[cid].totalDebt += o.remainingAmount || 0;
+    clientDebtMap[cid].orderCount++;
+  }
+  const debtsByClient = Object.values(clientDebtMap)
+    .sort((a, b) => b.totalDebt - a.totalDebt)
+    .slice(0, 10);
+
+  const [totalProducts, totalLocations] = await Promise.all([
     Product.countDocuments(),
     Location.countDocuments(),
-    Order.aggregate([
-      ...makeMatch(),
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          orders: { $sum: 1 },
-          revenue: { $sum: '$paidAmount' },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]),
-    Order.aggregate([
-      ...makeMatch(),
-      {
-        $project: {
-          productIds: {
-            $cond: {
-              if: { $and: [{ $isArray: '$items' }, { $gt: [{ $size: '$items' }, 0] }] },
-              then: '$items.product',
-              else: ['$product'],
-            },
-          },
-        },
-      },
-      { $unwind: '$productIds' },
-      { $group: { _id: '$productIds', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 5 },
-      { $lookup: { from: 'products', localField: '_id', foreignField: '_id', as: 'product' } },
-      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-      { $project: { name: '$product.name', count: 1 } },
-    ]),
-    Order.find(baseFilter)
-      .populate('client', 'name')
-      .populate('items.product', 'name')
-      .populate({
-        path: 'payments.payment',
-        select: 'amount status createdAt createdBy',
-        populate: { path: 'createdBy', select: 'name' },
-      })
-      .populate('payments.acceptedBy', 'name')
-      .sort('-createdAt')
-      .limit(10)
-      .lean(),
-    Order.aggregate([...makeMatch(), { $group: { _id: null, total: { $sum: '$remainingAmount' } } }]),
-    Order.aggregate([
-      ...makeMatch(),
-      { $match: { remainingAmount: { $gt: 0 } } },
-      { $group: { _id: '$client', totalDebt: { $sum: '$remainingAmount' }, orderCount: { $sum: 1 } } },
-      { $sort: { totalDebt: -1 } },
-      { $limit: 10 },
-      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'client' } },
-      { $unwind: { path: '$client', preserveNullAndEmptyArrays: true } },
-      { $project: { clientName: '$client.name', totalDebt: 1, orderCount: 1 } },
-    ]),
   ]);
+
+  const recentOrders = allOrders.slice(0, 10);
 
   res.json({
     success: true,
     data: {
       totalOrders,
-      totalRevenue: totalRevenue[0]?.total || 0,
+      totalRevenue,
       ordersByStatus,
       topLocations,
-      totalProducts: req.query.productId ? totalOrders : totalProducts,
+      totalProducts: hasProductFilter ? totalOrders : totalProducts,
       totalLocations,
       revenueByDay,
       topProducts,
       recentOrders,
-      totalDebts: totalDebts[0]?.total || 0,
+      totalDebts,
       debtsByClient,
     },
     error: null,
