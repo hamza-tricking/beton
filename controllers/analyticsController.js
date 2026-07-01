@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
+const Payment = require('../models/Payment');
 const Product = require('../models/Product');
 const Location = require('../models/Location');
 const User = require('../models/User');
@@ -28,7 +29,6 @@ const buildMatchFilter = async (query, user) => {
     }
   }
 
-  // Apply query filters on top
   if (query.clientId) {
     const clientId = toObjectId(query.clientId);
     filter.client = filter.client
@@ -73,24 +73,30 @@ exports.getDashboard = catchAsync(async (req, res) => {
     .populate('client', 'name')
     .populate('items.product', 'name')
     .populate('items.location', 'placeName')
-    .populate({
-      path: 'payments.payment',
-      select: 'amount status createdAt createdBy',
-      populate: { path: 'createdBy', select: 'name' },
-    })
-    .populate('payments.acceptedBy', 'name')
     .sort('-createdAt')
     .lean();
 
   const totalOrders = allOrders.length;
-  const totalRevenue = allOrders.reduce((sum, o) => sum + (o.paidAmount || 0), 0);
+  const orderTotalPriceSum = allOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+
+  // Revenue from accepted payments
+  const paymentFilter = {};
+  if (filter.client) paymentFilter.client = filter.client;
+  if (filter.createdAt) paymentFilter.createdAt = filter.createdAt;
+  paymentFilter.status = 'accepted';
+
+  const totalRevenueResult = await Payment.aggregate([
+    { $match: paymentFilter },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const totalRevenue = totalRevenueResult[0]?.total || 0;
 
   const statusMap = {};
   for (const o of allOrders) {
     const st = o.status || 'unknown';
-    if (!statusMap[st]) statusMap[st] = { count: 0, revenue: 0 };
+    if (!statusMap[st]) statusMap[st] = { count: 0, totalAmount: 0 };
     statusMap[st].count++;
-    statusMap[st].revenue += o.paidAmount || 0;
+    statusMap[st].totalAmount += o.totalPrice || 0;
   }
   const ordersByStatus = Object.entries(statusMap).map(([status, data]) => ({ _id: status, ...data }));
 
@@ -117,16 +123,26 @@ exports.getDashboard = catchAsync(async (req, res) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
 
+  // Revenue by day from accepted payments
   const dayMap = {};
   for (const o of allOrders) {
     const day = o.createdAt ? new Date(o.createdAt).toISOString().slice(0, 10) : 'unknown';
-    if (!dayMap[day]) dayMap[day] = { orders: 0, revenue: 0 };
+    if (!dayMap[day]) dayMap[day] = { orders: 0, totalAmount: 0 };
     dayMap[day].orders++;
-    dayMap[day].revenue += o.paidAmount || 0;
+    dayMap[day].totalAmount += o.totalPrice || 0;
   }
-  const revenueByDay = Object.entries(dayMap)
-    .map(([d, data]) => ({ _id: d, ...data }))
-    .sort((a, b) => a._id.localeCompare(b._id));
+  // Also include payment days
+  const paymentsByDay = await Payment.aggregate([
+    { $match: { ...paymentFilter, acceptedAt: { $ne: null } } },
+    {
+      $group: {
+        _id: { $dateToString: { format: '%Y-%m-%d', date: '$acceptedAt' } },
+        revenue: { $sum: '$amount' },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+  const revenueByDay = paymentsByDay.map(d => ({ _id: d._id, orders: 0, revenue: d.revenue }));
 
   const productMap = {};
   for (const o of allOrders) {
@@ -141,20 +157,37 @@ exports.getDashboard = catchAsync(async (req, res) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
 
-  const totalDebts = allOrders.reduce((sum, o) => sum + (o.remainingAmount || 0), 0);
-
-  const clientDebtMap = {};
-  for (const o of allOrders) {
-    if ((o.remainingAmount || 0) <= 0) continue;
-    const cid = o.client?._id || o.client || 'unknown';
-    const cname = o.client?.name || 'غير معروف';
-    if (!clientDebtMap[cid]) clientDebtMap[cid] = { clientId: cid, clientName: cname, totalDebt: 0, orderCount: 0 };
-    clientDebtMap[cid].totalDebt += o.remainingAmount || 0;
-    clientDebtMap[cid].orderCount++;
+  // Total debts from User model
+  let clientFilter = {};
+  if (req.user.role === 'custom_staff') {
+    const clients = await getAssignedClients(req.user);
+    if (clients !== null) {
+      clientFilter._id = { $in: clients.length > 0 ? clients : [] };
+    }
   }
-  const debtsByClient = Object.values(clientDebtMap)
-    .sort((a, b) => b.totalDebt - a.totalDebt)
-    .slice(0, 10);
+  if (req.query.clientId) {
+    clientFilter._id = req.query.clientId;
+  }
+
+  const debtResult = await User.aggregate([
+    { $match: { ...clientFilter, role: 'client' } },
+    { $group: { _id: null, totalDebts: { $sum: '$totalDebt' } } },
+  ]);
+  const totalDebts = debtResult[0]?.totalDebts || 0;
+
+  // Debts by client
+  const clientsWithDebt = await User.find({ ...clientFilter, role: 'client', totalDebt: { $gt: 0 } })
+    .select('name totalDebt')
+    .sort({ totalDebt: -1 })
+    .limit(10)
+    .lean();
+
+  const debtsByClient = clientsWithDebt.map(c => ({
+    clientId: c._id,
+    clientName: c.name,
+    totalDebt: c.totalDebt || 0,
+    orderCount: 0,
+  }));
 
   const [totalProducts, totalLocations] = await Promise.all([
     Product.countDocuments(),
@@ -170,7 +203,6 @@ exports.getDashboard = catchAsync(async (req, res) => {
   const sortedOrders = [...allOrders].sort((a, b) => {
     let cmp = 0;
     if (sortBy === 'amount') cmp = (a.totalPrice || 0) - (b.totalPrice || 0);
-    else if (sortBy === 'debt') cmp = (a.remainingAmount || 0) - (b.remainingAmount || 0);
     else cmp = new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
     return sortOrder * cmp;
   });
@@ -185,13 +217,13 @@ exports.getDashboard = catchAsync(async (req, res) => {
     data: {
       totalOrders,
       totalRevenue,
+      totalDebts,
       ordersByStatus,
       topLocations,
       totalProducts: hasProductFilter ? totalOrders : totalProducts,
       totalLocations,
       revenueByDay,
       topProducts,
-      totalDebts,
       debtsByClient,
       orders,
       ordersTotal,
@@ -218,12 +250,6 @@ exports.getOrdersByStatus = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name')
       .populate('items.location', 'placeName')
-      .populate({
-        path: 'payments.payment',
-        select: 'amount status createdAt createdBy',
-        populate: { path: 'createdBy', select: 'name' },
-      })
-      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
@@ -258,12 +284,6 @@ exports.getOrdersByLocation = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name')
       .populate('items.location', 'placeName')
-      .populate({
-        path: 'payments.payment',
-        select: 'amount status createdAt createdBy',
-        populate: { path: 'createdBy', select: 'name' },
-      })
-      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
@@ -289,7 +309,7 @@ exports.getFilterOptions = catchAsync(async (req, res) => {
   }
 
   const [clients, products] = await Promise.all([
-    User.find(clientFilter).select('name email').sort('name').lean(),
+    User.find(clientFilter).select('name email totalDebt').sort('name').lean(),
     Product.find().select('name').sort('name').lean(),
   ]);
   res.json({
@@ -306,7 +326,6 @@ exports.getOrdersByClientDebt = catchAsync(async (req, res) => {
   const skip = (page - 1) * limit;
   const filter = {
     client: toObjectId(req.params.clientId),
-    remainingAmount: { $gt: 0 },
   };
   const [orders, total] = await Promise.all([
     Order.find(filter)
@@ -315,12 +334,6 @@ exports.getOrdersByClientDebt = catchAsync(async (req, res) => {
       .populate('globalLocation', 'placeName')
       .populate('items.product', 'name')
       .populate('items.location', 'placeName')
-      .populate({
-        path: 'payments.payment',
-        select: 'amount status createdAt createdBy',
-        populate: { path: 'createdBy', select: 'name' },
-      })
-      .populate('payments.acceptedBy', 'name')
       .sort('-createdAt')
       .skip(skip)
       .limit(limit)
@@ -332,5 +345,99 @@ exports.getOrdersByClientDebt = catchAsync(async (req, res) => {
     data: { orders, total, page, totalPages: Math.ceil(total / limit) },
     error: null,
     source: 'ANALYTICS_ORDERS_BY_CLIENT_DEBT',
+  });
+});
+
+// Client Statement API
+exports.getClientStatement = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 50;
+  const skip = (page - 1) * limit;
+
+  const client = await User.findById(id).select('name totalDebt').lean();
+  if (!client) throw new AppError('Client not found', 404);
+
+  // Get all orders for this client
+  const orders = await Order.find({ client: id })
+    .populate('items.product', 'name')
+    .populate('items.location', 'placeName')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // Get all payments for this client
+  const payments = await Payment.find({ client: id, status: 'accepted' })
+    .populate('createdBy', 'name')
+    .populate('acceptedBy', 'name')
+    .sort({ acceptedAt: -1 })
+    .lean();
+
+  // Build ledger entries
+  const entries = [];
+
+  for (const o of orders) {
+    entries.push({
+      date: o.createdAt,
+      type: 'order',
+      refId: o._id,
+      description: o.items?.length
+        ? `إنشاء طلب - ${o.items.map(i => i.product?.name).join('، ')}`
+        : 'إنشاء طلب',
+      debit: o.totalPrice,
+      credit: 0,
+    });
+    if (o.status === 'cancelled') {
+      entries.push({
+        date: o.updatedAt,
+        type: 'cancel',
+        refId: o._id,
+        description: 'إلغاء طلب',
+        debit: 0,
+        credit: o.totalPrice,
+      });
+    }
+  }
+
+  for (const p of payments) {
+    entries.push({
+      date: p.acceptedAt || p.createdAt,
+      type: 'payment',
+      refId: p._id,
+      description: `تسديد دين - ${p.createdBy?.name || ''}`,
+      debit: 0,
+      credit: p.amount,
+      details: {
+        debtBefore: p.debtBefore,
+        debtAfter: p.debtAfter,
+      },
+    });
+  }
+
+  // Sort by date ascending, then calculate running balance
+  entries.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  let balance = 0;
+  for (const entry of entries) {
+    balance += (entry.debit || 0) - (entry.credit || 0);
+    entry.balance = balance;
+  }
+
+  // Reverse for newest-first display, but keep balance calculated from oldest
+  entries.reverse();
+
+  const total = entries.length;
+  const paginated = entries.slice(skip, skip + limit);
+
+  res.json({
+    success: true,
+    data: {
+      client: { _id: client._id, name: client.name, totalDebt: client.totalDebt },
+      entries: paginated,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    },
+    error: null,
+    source: 'CLIENT_STATEMENT',
   });
 });

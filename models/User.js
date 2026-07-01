@@ -22,6 +22,7 @@ const userSchema = new mongoose.Schema({
   periodEnd: { type: Date, default: null },
   allowedAccountants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   refreshToken: { type: String, default: null },
+  totalDebt: { type: Number, default: 0, min: 0 },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

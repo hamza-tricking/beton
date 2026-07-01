@@ -1,5 +1,4 @@
 const Payment = require('../models/Payment');
-const Order = require('../models/Order');
 const User = require('../models/User');
 const CustomRole = require('../models/CustomRole');
 const { getAssignedClients, getAllowedAccountants } = require('../utils/accountantAccess');
@@ -8,28 +7,25 @@ const catchAsync = require('../utils/catchAsync');
 const { logAction } = require('../services/historyService');
 
 exports.createPayment = catchAsync(async (req, res) => {
-  const { orderId, clientId, amount } = req.body;
+  const { clientId, amount } = req.body;
 
-  if (!orderId || !clientId || !amount) {
-    throw new AppError('Provide orderId, clientId, and amount', 400);
+  if (!clientId || !amount || amount <= 0) {
+    throw new AppError('Provide clientId and amount greater than 0', 400);
   }
 
-  const order = await Order.findById(orderId).lean();
-  if (!order) throw new AppError('Order not found', 404);
-  if (order.client.toString() !== clientId) {
-    throw new AppError('Client does not match this order', 400);
-  }
+  const client = await User.findById(clientId).select('name totalDebt').lean();
+  if (!client) throw new AppError('Client not found', 404);
 
   const payment = await Payment.create({
-    order: orderId,
     client: clientId,
     amount,
+    debtBefore: client.totalDebt || 0,
+    debtAfter: client.totalDebt || 0,
     createdBy: req.user._id,
   });
 
   const populated = await Payment.findById(payment._id)
-    .populate('client', 'name email')
-    .populate('order', 'totalPrice status')
+    .populate('client', 'name email totalDebt')
     .populate('createdBy', 'name')
     .lean();
 
@@ -38,8 +34,8 @@ exports.createPayment = catchAsync(async (req, res) => {
     targetType: 'Payment',
     targetId: payment._id,
     targetDisplay: `دفعة ${amount} دج`,
-    description: `قام ${req.user.name} بتسجيل دفعة بقيمة ${amount.toLocaleString()} دج للزبون ${clientName}`,
-    details: { orderId, clientId, clientName, amount, orderTotal: order.totalPrice },
+    description: `قام ${req.user.name} بتسجيل دفعة بقيمة ${amount.toLocaleString()} دج للزبون ${clientName} (الدين: ${(client.totalDebt || 0).toLocaleString()} دج)`,
+    details: { clientId, clientName, amount, debtBefore: client.totalDebt },
     ip: req.ip,
     userAgent: req.headers['user-agent'],
   });
@@ -71,7 +67,6 @@ exports.getPayments = catchAsync(async (req, res) => {
     }
   }
 
-  // Apply query filters on top of role-based filter (intersect with $in if role already restricted)
   if (req.query.clientId) {
     filter.client = filter.client?.$in
       ? { $in: filter.client.$in.filter((c) => c.toString() === req.query.clientId) }
@@ -95,8 +90,7 @@ exports.getPayments = catchAsync(async (req, res) => {
 
   const [payments, total] = await Promise.all([
     Payment.find(filter)
-      .populate('client', 'name email')
-      .populate('order', 'totalPrice status')
+      .populate('client', 'name email totalDebt')
       .populate('createdBy', 'name')
       .populate('acceptedBy', 'name')
       .sort('-createdAt')
@@ -128,8 +122,7 @@ exports.getPendingPayments = catchAsync(async (req, res) => {
 
   const [payments, total] = await Promise.all([
     Payment.find(filter)
-      .populate('client', 'name email')
-      .populate('order', 'totalPrice status')
+      .populate('client', 'name email totalDebt')
       .populate('createdBy', 'name')
       .sort('-createdAt')
       .skip(skip)
@@ -159,36 +152,24 @@ exports.acceptPayment = catchAsync(async (req, res) => {
     }
   }
 
+  const client = await User.findById(payment.client);
+  if (!client) throw new AppError('Client not found', 404);
+
+  const currentDebt = client.totalDebt || 0;
+  const newDebt = Math.max(0, currentDebt - payment.amount);
+
   payment.status = 'accepted';
   payment.acceptedBy = req.user._id;
   payment.acceptedAt = new Date();
+  payment.debtBefore = currentDebt;
+  payment.debtAfter = newDebt;
   await payment.save();
 
-  const order = await Order.findById(payment.order);
-  const newPaidAmount = (order.paidAmount || 0) + payment.amount;
-  const newRemaining = order.totalPrice - newPaidAmount;
-
-  order.paidAmount = newPaidAmount;
-  order.remainingAmount = Math.max(0, newRemaining);
-  order.payments.push({
-    payment: payment._id,
-    amount: payment.amount,
-    acceptedBy: req.user._id,
-    acceptedAt: new Date(),
-  });
-
-  if (newRemaining <= 0) {
-    order.paymentStatus = 'paid';
-    order.status = 'completed';
-  } else if (newPaidAmount > 0) {
-    order.paymentStatus = 'partial';
-  }
-
-  await order.save();
+  client.totalDebt = newDebt;
+  await client.save();
 
   const populated = await Payment.findById(payment._id)
-    .populate('client', 'name email')
-    .populate('order', 'totalPrice status paidAmount remainingAmount paymentStatus')
+    .populate('client', 'name email totalDebt')
     .populate('createdBy', 'name')
     .populate('acceptedBy', 'name')
     .lean();
@@ -198,8 +179,8 @@ exports.acceptPayment = catchAsync(async (req, res) => {
     targetType: 'Payment',
     targetId: payment._id,
     targetDisplay: `دفعة ${payment.amount} دج`,
-    description: `قام ${req.user.name} بقبول دفعة بقيمة ${payment.amount.toLocaleString()} دج من الزبون ${clientName}`,
-    details: { paymentId: payment._id, orderId: payment.order, amount: payment.amount, clientName, newPaidAmount, newRemaining },
+    description: `قام ${req.user.name} بقبول دفعة بقيمة ${payment.amount.toLocaleString()} دج من الزبون ${clientName} (الدين: ${currentDebt.toLocaleString()} ← ${newDebt.toLocaleString()} دج)`,
+    details: { paymentId: payment._id, amount: payment.amount, clientName, debtBefore: currentDebt, debtAfter: newDebt },
     ip: req.ip,
     userAgent: req.headers['user-agent'],
   });
@@ -234,7 +215,7 @@ exports.rejectPayment = catchAsync(async (req, res) => {
     targetId: payment._id,
     targetDisplay: `دفعة ${payment.amount} دج`,
     description: `قام ${req.user.name} برفض دفعة بقيمة ${payment.amount.toLocaleString()} دج من الزبون ${clientName}`,
-    details: { paymentId: payment._id, orderId: payment.order, amount: payment.amount, clientName },
+    details: { paymentId: payment._id, amount: payment.amount, clientName },
     ip: req.ip,
     userAgent: req.headers['user-agent'],
   });
@@ -266,7 +247,7 @@ exports.getPaymentFilterOptions = catchAsync(async (req, res) => {
   }
 
   const [clients, createdByUserIds, acceptedByUserIds] = await Promise.all([
-    User.find(clientFilter).select('name email').sort('name').lean(),
+    User.find(clientFilter).select('name email totalDebt').sort('name').lean(),
     Payment.distinct('createdBy', paymentBaseFilter),
     Payment.distinct('acceptedBy', { ...paymentBaseFilter, acceptedBy: { $ne: null } }),
   ]);

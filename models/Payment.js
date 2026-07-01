@@ -1,17 +1,14 @@
 const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema({
-  order: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
-    required: true,
-  },
   client: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
   },
   amount: { type: Number, required: true, min: 0 },
+  debtBefore: { type: Number, default: 0 },
+  debtAfter: { type: Number, default: 0 },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
