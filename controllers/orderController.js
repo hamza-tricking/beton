@@ -173,6 +173,11 @@ exports.getOrders = catchAsync(async (req, res) => {
       filter.createdAt.$lte = end;
     }
   }
+  if (req.query.paymentStatus === 'paid') {
+    filter.paymentStatus = 'paid';
+  } else if (req.query.paymentStatus === 'debt') {
+    filter.remainingAmount = { $gt: 0 };
+  }
 
   // Sorting
   const sortBy = req.query.sortBy || 'date';
