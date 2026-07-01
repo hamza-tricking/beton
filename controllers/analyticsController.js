@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Location = require('../models/Location');
@@ -6,13 +7,18 @@ const CustomRole = require('../models/CustomRole');
 const { getAssignedClients, getPeriodConfig, buildDateFilter } = require('../utils/accountantAccess');
 const catchAsync = require('../utils/catchAsync');
 
+const toObjectId = (id) => {
+  if (mongoose.Types.ObjectId.isValid(id)) return new mongoose.Types.ObjectId(id);
+  return id;
+};
+
 const buildMatchFilter = async (query, user) => {
   const filter = {};
 
   if (user.role === 'custom_staff') {
     const clients = await getAssignedClients(user);
     if (clients !== null) {
-      filter.client = { $in: clients.length > 0 ? clients : [] };
+      filter.client = { $in: clients.length > 0 ? clients.map(toObjectId) : [] };
     }
     const role = await CustomRole.findById(user.customRole).lean();
     const periodConfig = getPeriodConfig(user, role);
@@ -24,9 +30,10 @@ const buildMatchFilter = async (query, user) => {
 
   // Apply query filters on top
   if (query.clientId) {
+    const clientId = toObjectId(query.clientId);
     filter.client = filter.client
-      ? { $in: [query.clientId].concat(filter.client.$in || []) }
-      : query.clientId;
+      ? { $in: [clientId].concat((filter.client.$in || []).map(toObjectId)) }
+      : clientId;
   }
   if (query.startDate || query.endDate) {
     if (!filter.createdAt) filter.createdAt = {};
