@@ -403,7 +403,9 @@ exports.getClientStatement = catchAsync(async (req, res) => {
       date: p.acceptedAt || p.createdAt,
       type: 'payment',
       refId: p._id,
-      description: `تسديد دين (مقبول) - ${p.acceptedBy?.name || ''}`,
+      description: p.source === 'order_initial'
+        ? `دفعة أولى (عند إنشاء الطلب) - ${p.acceptedBy?.name || ''}`
+        : `تسديد دين (مقبول) - ${p.acceptedBy?.name || ''}`,
       debit: 0,
       credit: p.amount,
       details: {

@@ -83,6 +83,7 @@ exports.createOrder = catchAsync(async (req, res) => {
     await Payment.create({
       client: clientId,
       amount: paid,
+      source: 'order_initial',
       status: 'accepted',
       createdBy: req.user._id,
       acceptedBy: req.user._id,

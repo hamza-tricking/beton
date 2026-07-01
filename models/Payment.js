@@ -25,6 +25,11 @@ const paymentSchema = new mongoose.Schema({
     default: null,
   },
   acceptedAt: { type: Date, default: null },
+  source: {
+    type: String,
+    enum: ['manual', 'order_initial'],
+    default: 'manual',
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Payment', paymentSchema);
