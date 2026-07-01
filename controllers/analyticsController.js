@@ -403,7 +403,7 @@ exports.getClientStatement = catchAsync(async (req, res) => {
       date: p.acceptedAt || p.createdAt,
       type: 'payment',
       refId: p._id,
-      description: `تسديد دين - ${p.createdBy?.name || ''}`,
+      description: `تسديد دين (مقبول) - ${p.acceptedBy?.name || ''}`,
       debit: 0,
       credit: p.amount,
       details: {

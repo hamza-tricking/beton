@@ -59,6 +59,9 @@ exports.createOrder = catchAsync(async (req, res) => {
     globalLocation: globalLocationId || null,
     items: orderItems,
     totalPrice,
+    paidAmount: 0,
+    remainingAmount: totalPrice,
+    paymentStatus: 'unpaid',
     status: 'pending',
   });
 
@@ -127,6 +130,9 @@ exports.getOrders = catchAsync(async (req, res) => {
       end.setHours(23, 59, 59, 999);
       filter.createdAt.$lte = end;
     }
+  }
+  if (req.query.paymentStatus) {
+    filter.paymentStatus = req.query.paymentStatus;
   }
 
   // Sorting
