@@ -58,8 +58,21 @@ const buildMatchStage = async (query, user) => {
   return { $match: filter };
 };
 
+const buildMatchPipeline = async (query, user) => {
+  const filter = await buildMatchFilter(query, user);
+  if (query.productId) {
+    filter.$or = [
+      { product: query.productId },
+      { 'items.product': query.productId },
+    ];
+  }
+  return filter;
+};
+
 exports.getDashboard = catchAsync(async (req, res) => {
-  const matchStage = await buildMatchStage(req.query, req.user);
+  const baseFilter = await buildMatchPipeline(req.query, req.user);
+
+  const makeMatch = () => [{ $match: { ...baseFilter } }];
 
   const [
     totalOrders,
@@ -74,14 +87,14 @@ exports.getDashboard = catchAsync(async (req, res) => {
     totalDebts,
     debtsByClient,
   ] = await Promise.all([
-    Order.countDocuments(matchStage.$match || {}),
-    Order.aggregate([matchStage, { $group: { _id: null, total: { $sum: '$paidAmount' } } }]),
+    Order.countDocuments(baseFilter),
+    Order.aggregate([...makeMatch(), { $group: { _id: null, total: { $sum: '$paidAmount' } } }]),
     Order.aggregate([
-      matchStage,
+      ...makeMatch(),
       { $group: { _id: '$status', count: { $sum: 1 }, revenue: { $sum: '$paidAmount' } } },
     ]),
     Order.aggregate([
-      matchStage,
+      ...makeMatch(),
       {
         $project: {
           locations: {
@@ -112,7 +125,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
     Product.countDocuments(),
     Location.countDocuments(),
     Order.aggregate([
-      matchStage,
+      ...makeMatch(),
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -123,7 +136,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
       { $sort: { _id: 1 } },
     ]),
     Order.aggregate([
-      matchStage,
+      ...makeMatch(),
       {
         $project: {
           productIds: {
@@ -143,7 +156,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
       { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
       { $project: { name: '$product.name', count: 1 } },
     ]),
-    Order.find(matchStage.$match || {})
+    Order.find(baseFilter)
       .populate('client', 'name')
       .populate('items.product', 'name')
       .populate({
@@ -155,12 +168,9 @@ exports.getDashboard = catchAsync(async (req, res) => {
       .sort('-createdAt')
       .limit(10)
       .lean(),
+    Order.aggregate([...makeMatch(), { $group: { _id: null, total: { $sum: '$remainingAmount' } } }]),
     Order.aggregate([
-      matchStage,
-      { $group: { _id: null, total: { $sum: '$remainingAmount' } } },
-    ]),
-    Order.aggregate([
-      matchStage,
+      ...makeMatch(),
       { $match: { remainingAmount: { $gt: 0 } } },
       { $group: { _id: '$client', totalDebt: { $sum: '$remainingAmount' }, orderCount: { $sum: 1 } } },
       { $sort: { totalDebt: -1 } },
