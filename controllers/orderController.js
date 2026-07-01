@@ -1,4 +1,5 @@
 const Order = require('../models/Order');
+const Payment = require('../models/Payment');
 const ProductLocationPrice = require('../models/ProductLocationPrice');
 const Product = require('../models/Product');
 const User = require('../models/User');
@@ -68,12 +69,42 @@ exports.createOrder = catchAsync(async (req, res) => {
     status: 'pending',
   });
 
-  // Update client's total debt (only unpaid portion)
-  await User.findByIdAndUpdate(clientId, { $inc: { totalDebt: remaining } });
+  // Update client's total debt (full totalPrice)
+  await User.findByIdAndUpdate(clientId, { $inc: { totalDebt: totalPrice } });
 
-  let clientName;
-  const clientDoc = await User.findById(clientId).select('name').lean();
-  clientName = clientDoc?.name || 'غير معروف';
+  const clientDoc = await User.findById(clientId).select('name totalDebt').lean();
+  let clientName = clientDoc?.name || 'غير معروف';
+
+  // If initial payment was made, create auto-accepted payment record
+  if (paid > 0) {
+    const debtBefore = clientDoc.totalDebt || 0;
+    const debtAfter = Math.max(0, debtBefore - paid);
+
+    await Payment.create({
+      client: clientId,
+      amount: paid,
+      status: 'accepted',
+      createdBy: req.user._id,
+      acceptedBy: req.user._id,
+      acceptedAt: new Date(),
+      debtBefore,
+      debtAfter,
+    });
+
+    await User.findByIdAndUpdate(clientId, { $inc: { totalDebt: -paid } });
+
+    logAction('PAYMENT_ACCEPT', req.user._id, {
+      targetType: 'Payment',
+      targetId: null,
+      targetDisplay: `دفعة أولى ${paid} دج`,
+      description: `دفعة أولى بقيمة ${paid.toLocaleString()} دج عند إنشاء الطلب #${order._id} للزبون ${clientName}`,
+      details: { clientId, amount: paid, debtBefore, debtAfter, orderId: order._id },
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+
 
   const populated = await Order.findById(order._id)
     .populate('client', 'name email')
